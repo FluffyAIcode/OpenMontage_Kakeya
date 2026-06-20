@@ -46,10 +46,14 @@ DEFAULT_API_KEY_ENV = "KAKEYA_API_KEY"
 _DEFAULT_MODEL_LABEL = "kakeya-local"
 _HEALTH_TIMEOUT_S = 2.0
 _GEN_TIMEOUT_S = 300
-# Kakeya's batched scheduler peaks around 8 concurrent sessions (their README:
-# 8.45x served throughput at 8 sessions). Default the client fan-out to match so
-# a GPU server actually sees enough in-flight requests to batch.
-_DEFAULT_BATCH_CONCURRENCY = 8
+# Default batch fan-out is SEQUENTIAL (1). Real testing against a live Kakeya
+# server (ADR loop iter 4) showed the OpenAI-compatible HTTP shim — the only
+# stable text transport today — is single-session and returns HTTP 500 on
+# concurrent requests. Kakeya's batched-scheduler throughput (8.45x) lives on the
+# gRPC multi-tenant/CUDA path, NOT the shim. So concurrency>1 must only be raised
+# when pointed at a concurrency-capable backend; defaulting to 1 keeps the shim
+# path correct out of the box.
+_DEFAULT_BATCH_CONCURRENCY = 1
 _MAX_BATCH_CONCURRENCY = 64
 
 
@@ -164,9 +168,11 @@ class KakeyaLLM(BaseTool):
                 "maximum": _MAX_BATCH_CONCURRENCY,
                 "default": _DEFAULT_BATCH_CONCURRENCY,
                 "description": (
-                    "Max concurrent in-flight requests for 'batch'. The server's "
-                    "batched scheduler needs concurrent requests to realize its "
-                    "throughput win; 1 = sequential."
+                    "Max concurrent in-flight requests for 'batch'. Default 1 "
+                    "(sequential) — the Kakeya HTTP shim is single-session and 500s "
+                    "on concurrent requests. Raise ONLY when pointed at a "
+                    "concurrency-capable backend (gRPC multi-tenant / CUDA), where "
+                    "the batched scheduler turns concurrency into throughput."
                 ),
             },
         },
@@ -391,12 +397,12 @@ class KakeyaLLM(BaseTool):
                 error="kakeya_llm 'batch' prompts must all be non-empty strings.",
             )
 
-        # The throughput win (W2) comes from the SERVER's batched scheduler
-        # absorbing concurrent in-flight requests when it runs on GPU. A
-        # sequential client loop would never exercise that batching, so we fan
-        # the prompts out concurrently (bounded by `concurrency`). Order is
-        # preserved by index; per-item errors are isolated so one bad prompt
-        # never aborts the batch.
+        # Fan the prompts out with `concurrency` workers (default 1). Against a
+        # concurrency-capable backend (gRPC multi-tenant / CUDA) raising this
+        # lets the SERVER's batched scheduler turn concurrency into throughput
+        # (W2). Against the single-session HTTP shim, keep it at 1 (concurrent
+        # requests there 500). Order is preserved by index; per-item errors are
+        # isolated so one failure never aborts the batch.
         concurrency = self._resolve_concurrency(inputs, len(prompts))
         completions: list[Optional[str]] = [None] * len(prompts)
         errors: list[Optional[str]] = [None] * len(prompts)
