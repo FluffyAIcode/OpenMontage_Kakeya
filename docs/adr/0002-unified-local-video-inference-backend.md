@@ -8,6 +8,32 @@
 
 ---
 
+## 0. Binding engineering guidelines (no fallback / mock / fake / simplify)
+
+> Added 2026-06-20 once real GPU (H200, 144 GB) was provisioned. These are
+> **binding** for this integration and supersede the earlier "ship client + mock
+> tests, defer the server" stance.
+
+1. **No fake / no mock as a correctness gate.** The integration's correctness is
+   proven against **real models on real GPU**. Mock HTTP servers may remain only as
+   fast *unit* checks of pure functions (payload building, parsing, clamping); they
+   **do not** count as evidence the integration works. The pass/fail gate is the
+   **real** integration test against a live GPU-served endpoint.
+2. **No fallback as a hiding place.** A real integration test must hit the **real
+   gateway / real Kakeya server** and fail loudly if it is unreachable — it must
+   **not** silently pass by routing to the in-process path, a stub, or a cached
+   result. (When no GPU endpoint is configured, the real test **skips**, it never
+   fakes a pass.)
+3. **No simplify.** Generate with real model weights, a real VAE decode, and write a
+   real, ffprobe-verifiable `.mp4`. "It returned 200 with some bytes" is not enough;
+   the output must be a decodable video of the requested dimensions/frames.
+4. **Real evidence is recorded.** Each real run records model id, device, dims,
+   frame count, file size, and ffprobe stream info in the loop log.
+
+The in-process diffusers path in `_shared.py` remains as an **operational** option
+for users without a gateway, but it is **not** the thing under test here and is never
+used to make a gateway integration test pass.
+
 ## 1. Context & the reframed goal
 
 Follow-up to ADR 0001. The maintainer correctly observed that OpenMontage *does*
@@ -150,12 +176,20 @@ This mirrors the existing Modal endpoint convention and OpenAI's
 - Decouples OpenMontage from a heavy local `torch`/`diffusers` install when a gateway
   exists elsewhere.
 
+**Real evidence (Iteration 4 — H200, 144 GB)**
+
+- The gateway server is now **real and shipped** (`services/video_infer_gateway/`),
+  not deferred. Verified on an H200: `CogVideoX-2b`, 720×480, 49 frames → a real
+  **h264** mp4 (ffprobe-confirmed) in ~21 s, driven end-to-end by
+  `CogVideoVideo.execute()` → gateway (`mode=remote_gateway`). Binding test:
+  `tests/integration/test_real_gpu.py` (skips, never fakes, when no endpoint).
+
 **Negative / risks**
 
-- We do **not** ship the gateway server itself in this PR (it needs a GPU to be
-  meaningful and can't be CI-tested here). We ship the *client seam + contract +
-  tests*; standing up the warm server is an operator task / future PR.
 - One more configuration surface (`VIDEO_INFER_ENDPOINT`).
+- Disk, not VRAM, is the warm-pool ceiling: each model family's text encoder is
+  multi-GB, so a 23 GB box holds ~one model at a time (I9). Provision disk for the
+  number of models you want warm simultaneously.
 
 **Explicitly rejected**
 

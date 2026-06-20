@@ -8,6 +8,18 @@
 
 ---
 
+## 0. Binding engineering guidelines (no fallback / mock / fake / simplify)
+
+> Added 2026-06-20 once real GPU (H200, 144 GB) was provisioned.
+
+The text integration is now proven against a **real, GPU-served Kakeya server**
+(real model weights, real token generation). Mock servers remain only as fast unit
+checks of pure helpers; they are **not** the correctness gate. A real integration
+test must hit the **live Kakeya server** and fail loudly if unreachable — it must
+never pass via a stub, a fake response, or a fallback path. When no
+`KAKEYA_ENDPOINT` is configured the real test **skips**; it never fakes a pass. See
+ADR 0002 §0 for the full statement (shared across the integration).
+
 ## 1. Context
 
 The request: *"Integrate the Kakeya inference engine into OpenMontage, leveraging
@@ -130,6 +142,14 @@ against a real server:
 The honest headline: **on the hardware most users have, the only guaranteed win is
 cost/privacy, not speed.** Speed wins are GPU-gated and we label them as such in the
 tool's `not_good_for` and `supports` fields so the agent never over-promises.
+
+**Measured (Iteration 4, real H200 + real Qwen3-0.6B over the HTTP shim):** real
+`generate` returns real completions with real token usage; sequential batch returns
+4/4 real completions. **But the deprecated HTTP shim is single-session — concurrent
+requests return HTTP 500** (verified 3/4 failures at concurrency=4). So the
+client-side concurrent fan-out (W2) is *gated on Kakeya's gRPC multi-tenant/CUDA
+path*, not the shim; the tool now defaults batch concurrency to 1 accordingly. See
+`docs/adr/0001-kakeya-integration-loop-log.md` Iteration 4 + I8.
 
 ---
 

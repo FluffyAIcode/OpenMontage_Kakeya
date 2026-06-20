@@ -128,6 +128,48 @@ gateway), both behind existing selectors.
 
 ---
 
+## Iteration 4 — REAL GPU run: de-mock everything (H200, 144 GB)
+
+**Trigger:** GPU provisioned (vast.ai **H200 NVL, 144 GB VRAM**, CUDA 13.2). Directive:
+replace every GPU-absent mock with real implementation + tests; merge a binding
+"no fallback / mock / fake / simplify" guideline (ADR 0002 §0, ADR 0001 §0).
+
+**Built / deployed (all real)**
+
+- Installed real CUDA torch (`2.6.0+cu124`, `cuda.is_available()=True`) + diffusers.
+- **Wrote the real video gateway server** (`services/video_infer_gateway/server.py`):
+  FastAPI + diffusers warm pool implementing ADR 0002 §5. Deployed on the H200.
+- Ran a **real Kakeya HTTP shim** (`scripts/serve.py`, Qwen3-0.6B) on the H200.
+- SSH-tunnelled VM → GPU; pointed `VIDEO_INFER_ENDPOINT` / `KAKEYA_ENDPOINT` at them.
+- Added `tests/integration/test_real_gpu.py` — the **binding correctness gate**;
+  env-gated, **skips (never fakes)** when endpoints are absent.
+
+**Real evidence (measured, not targets)**
+
+| Engine | Real result |
+|--------|-------------|
+| Video gateway | `CogVideoX-2b`, 720×480, 49 frames, 20 steps → **1.36 MB mp4 in 21.4 s on H200**; ffprobe: **h264 720×480, 49 frames**. End-to-end through `CogVideoVideo.execute()` → gateway (`mode=remote_gateway`). |
+| Video health | `{"status":"ok","device":"cuda",...}` advertising all 8 model ids. |
+| Kakeya text | real completion (`'PING.'`), `usage.completion_tokens≥1`; sequential batch **4/4** real completions. |
+
+**Issues collected (real testing)**
+
+| ID | Issue | Severity | Disposition |
+|----|-------|----------|-------------|
+| I8 | **Kakeya HTTP shim is single-session**: concurrent requests (`concurrency>1`) return **HTTP 500** (verified: 1/4 ok, 3/4 → 500). Its batched/throughput path is gRPC+CUDA, not the shim. | correctness | **Fixed:** changed `kakeya_llm` default batch concurrency **8 → 1** (safe for the only stable transport). Raising it is documented as requiring a concurrency-capable backend. Added a real test that *documents* the 500 behaviour and asserts the tool isolates it (no crash/fake). |
+| I9 | H200 box has only ~23 GB free disk (no large data volume) → can hold **one** video model's weights at a time (T5/UMT5 text encoders dominate). | env | Hardware limit, reported honestly. Gateway design already routes by model id; more disk → more warm models. Not a simplification. |
+
+**Honest correction to Iteration 2:** the concurrent client fan-out (added as "the W2
+win") is correct *client* behaviour and genuinely helps a concurrency-capable gRPC/CUDA
+backend — but it is **counterproductive against the HTTP shim** (500s). Real testing
+forced the default back to sequential. The throughput win remains **gRPC-path-gated**
+(Phase 2b), now backed by evidence rather than assumption.
+
+**Result:** 6/6 real integration tests pass on live GPU; 29 offline smoke tests pass;
+mock tests explicitly demoted to "not the correctness gate" (ADR 0002 §0).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
