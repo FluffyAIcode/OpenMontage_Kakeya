@@ -345,6 +345,28 @@ becomes necessary; and **multi-GPU** independent-tile parallelism (needs ≥2 GP
 
 ---
 
+## Iteration 11 — Kakeya "mac bridge" / Mac mini MLX evaluation (ADR 0005)
+
+**Trigger:** "use the Kakeya mac bridge to connect to a local Mac mini and utilize its GPU."
+
+**Read the bridge design** (`docs/design/mac-bridge-cloud-agent-access.md`, `kakeya_mac.py`).
+**Finding:** the bridge is a **git-bus + GitHub Actions self-hosted-runner** dispatch for
+**allowlisted MLX eval/bench presets** — not a GPU connection and not a serving channel.
+
+**Objective verdict (ADR 0005):** this cloud agent **cannot** use it to "utilize the Mac
+mini GPU" — D1 no inbound path to the Mac; D2 needs owner setup (register Mac as a runner +
+workflow on a pushable repo); D3 the bridge lives in the Kakeya engine repo, not
+OpenMontage_Kakeya; D4 it's CI/eval, not serving; D5 MLX serves LLM **text**, not WAN video;
+D6 WAN latency kills the spec-decode data plane (control/tool plane over WAN, data plane on
+LAN). Per the no-fake guideline, did not fabricate a connection to an unreachable Mac.
+
+**Correct path (no OpenMontage code change):** the owner runs Kakeya's **MLX server**
+(`serve.py --backend mlx`) on the Mac mini and points OpenMontage's `kakeya_llm`
+(`KAKEYA_ENDPOINT`) at it over LAN/Tailscale — reusing the ADR 0001 seam. The Mac becomes a
+local, private text backend; video stays on CUDA (ADR 0002/0004).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
