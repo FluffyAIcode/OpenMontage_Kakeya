@@ -268,6 +268,39 @@ uses the **distilled proposer output alone (5.7×, high quality) is the better o
 point**, with the refine reserved for when extra fidelity is required. Multi-GPU parallel
 verifiers (§3.5) would compound this — still pending a ≥2-GPU box.
 
+### Latent MultiDiffusion build — the denoise-time merge fix (resolves I12 direction)
+
+Tier 1b (I12) concluded the f_θ/merge-consistency must act **during** denoising. Built
+exactly that for real WAN 2.1 1.3B:
+[`latent_multidiffusion_wan.py`](../../services/video_infer_gateway/experiments/latent_multidiffusion_wan.py).
+A **single shared canvas latent** at larger-than-native resolution (1472×768 from 2×2
+native 832×480 tiles) is denoised with **per-step prediction fusion** over overlapping
+tiles, so tiles co-evolve and cannot diverge. Compared against independent-tile denoise +
+latent merge (the Tier-1b mechanism), same noise/prompt/scheduler, decoded once each.
+Metrics: [`tier01_evidence/latent_multidiffusion_metrics.json`](tier01_evidence/latent_multidiffusion_metrics.json).
+
+**Result (real H200):**
+
+- The build **works**: real per-step latent fusion on WAN produces a **coherent
+  1472×768 video the model cannot generate natively in one pass** — the production-grade
+  realization of the f_θ/merge-consistency role.
+- **Visually more coherent** than independent-then-merge: the independent merge shows a
+  visible tonal band in the upper third; MultiDiffusion reads as one continuous scene
+  (`tier01_evidence/md_multidiffusion_mid.png` vs `md_independent_mid.png`).
+- **Vertical seam** (less confounded by scene content): **1.27× → 1.14×** (~10 % better).
+- **Horizontal "seam" ~2.6× in BOTH** is largely a **real shoreline edge in the scene**,
+  not a tiling artifact — the automated seam metric is confounded by scene structure.
+- On this **low-frequency** content, both overlap-blended methods are already close; the
+  big gap from Tier 1 was hard-overwrite (5×) vs any overlap blend.
+
+**Honest verdict:** the latent-MultiDiffusion mechanism is **implementable and correct on
+real WAN**, and is the right home for the f_θ role (co-evolution > post-hoc blend). A
+*definitive quantitative* win over plain overlap-blending needs (a) **high-frequency /
+structured content** (where independent tiles diverge hard) and (b) a **seam metric that
+separates tile boundaries from real scene edges** — the next refinement. Bugs fixed along
+the way: missing `torch.no_grad()` (OOM at 140 GB), `transformer_2` kwarg (I15), np frames
+(I16), seam-edge mislocation (I17).
+
 ## References
 
 1. VEnhancer — https://arxiv.org/abs/2407.07667 ; https://github.com/Vchitect/VEnhancer

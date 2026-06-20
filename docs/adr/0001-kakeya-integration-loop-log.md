@@ -288,6 +288,32 @@ number is **5.7× (proposer) / 1.97× (coarse-to-fine)**, with strong layout ali
 
 ---
 
+## Iteration 9 — latent-MultiDiffusion build (the denoise-time f_θ fix)
+
+**Trigger:** "start latent-MultiDiffusion build." Built the production-grade merge fix
+flagged by I12: a single shared canvas latent at larger-than-native resolution, denoised
+with **per-step prediction fusion** over overlapping native-size tiles (real WAN 2.1 1.3B,
+reimplemented denoise loop). `latent_multidiffusion_wan.py`.
+
+**Result (real H200):** the build works — produces a **coherent 1472×768 video** (from 2×2
+native 832×480 tiles) that WAN can't do natively in one pass. **Visually more coherent**
+than independent-then-merge (independent shows an upper-third tonal band; MultiDiffusion is
+one continuous scene). Vertical seam 1.27×→**1.14×** (~10 %); horizontal ~2.6× in BOTH is a
+**real shoreline edge** (metric confounded by scene content). On low-frequency content both
+overlap-blended methods are close.
+
+| ID | Finding/bug | Disposition |
+|----|-------------|-------------|
+| (oom) | custom denoise loop lacked `torch.no_grad()` → autograd graph OOM'd at 140 GB. | Fixed: `@torch.no_grad()` + expandable_segments. |
+| I17 | seam metric measured overlap-start/duplicate columns, not true tile boundaries. | Fixed: edges at `[x_off[1], WT]` / `[y_off[1], HT]`. |
+| I18 | seam metric confounded by real scene edges near boundaries; low-freq content blends easily. | A definitive quantitative MD win needs high-freq content + a boundary-isolating metric (next). |
+
+**Verdict:** latent MultiDiffusion is **implementable and correct on real WAN** and is the
+right home for the f_θ/merge-consistency role (co-evolution beats post-hoc blend, visually).
+Definitive quantitative advantage pending high-frequency content + a cleaner metric.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
