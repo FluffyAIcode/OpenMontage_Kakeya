@@ -100,6 +100,13 @@ drafter at all (caching), or the drafter and model **collapse into one distilled
 student** (distillation), whose "alignment" is the distillation pipeline itself —
 already performed upstream for Wan2.1-1.3B.
 
+> **Refinement:** the maintainer later specified a more precise architecture —
+> distilled-WAN *proposer* → low-res framework → **parallel full-WAN refiners** on
+> different regions → merge, with f_θ as a decompose/merge consistency map. That is a
+> *coarse-to-fine + tiled super-resolution* design (not spec-decode), evaluated in
+> **ADR 0004**. It still does not port Kakeya's AR trio, but it is the right mental
+> model for "parallel video inference" and is the basis for Phase-2b-for-video.
+
 ## 5. Recommendation for Phase-2b-for-video
 
 Do **not** re-create Kakeya's verifier/drafter/f_θ on WAN. Instead, in the gateway:
