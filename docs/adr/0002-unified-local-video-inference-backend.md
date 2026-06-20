@@ -177,6 +177,13 @@ hence the 500-on-concurrency finding I8). The **full** engine's throughput path
 (Drafter + Verifier + f_θ + bounded-KV restoration over the gRPC RuntimeService) is
 Phase 2b — drawn here to show where it slots in.
 
+> **The Drafter + Verifier + f_θ trio is a TEXT-path construct and does NOT transfer
+> to the video plane.** WAN is a bidirectional diffusion transformer with no causal KV
+> cache and no token accept/reject, so f_θ has nothing to restore and there is no
+> spec-decode to draft for. "Phase 2b for video" is therefore *feature caching +
+> serving distilled few-step WAN* — a different mechanism — **not** an aligned-WAN
+> drafter/verifier/f_θ port. See **ADR 0003** for the full objective evaluation.
+
 ## 4. Decision
 
 Introduce a **video inference gateway** seam: an optional, standalone, warm
