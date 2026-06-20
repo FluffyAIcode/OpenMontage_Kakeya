@@ -34,7 +34,17 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 def _np(frames):
-    return np.stack([np.asarray(f.convert("RGB"), np.uint8) for f in frames])
+    """Robust to list[PIL] | list[np.ndarray] | np.ndarray[T,H,W,3] (WAN returns np)."""
+    if isinstance(frames, np.ndarray):
+        arr = frames
+    elif hasattr(frames[0], "convert"):  # list[PIL]
+        return np.stack([np.asarray(f.convert("RGB"), np.uint8) for f in frames])
+    else:  # list[np.ndarray]
+        arr = np.stack([np.asarray(f) for f in frames])
+    if arr.dtype != np.uint8:
+        arr = (arr.clip(0, 1) * 255).round().astype(np.uint8) if float(arr.max()) <= 1.0 + 1e-3 \
+            else arr.clip(0, 255).astype(np.uint8)
+    return arr
 
 
 def _pil(a):
@@ -70,7 +80,11 @@ def main():
     pipe = WanPipeline.from_pretrained(MODEL, vae=vae, torch_dtype=dtype)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=3.0)
     pipe.to("cuda")
-    v2v = WanVideoToVideoPipeline(**pipe.components)  # shares weights with pipe
+    # WanPipeline.components may carry a `transformer_2` slot (Wan2.2 dual-denoiser)
+    # that WanVideoToVideoPipeline.__init__ doesn't accept. Pass only its expected
+    # modules; weights are shared (same objects), so no extra VRAM/disk.
+    _v2v_keys = ("tokenizer", "text_encoder", "transformer", "vae", "scheduler")
+    v2v = WanVideoToVideoPipeline(**{k: pipe.components[k] for k in _v2v_keys})
 
     def gen(steps, guidance, seed):
         g = torch.Generator(device="cpu").manual_seed(seed)

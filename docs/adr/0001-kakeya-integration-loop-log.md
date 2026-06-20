@@ -261,6 +261,33 @@ disk blocker.** The script is committed and ready.
 
 ---
 
+## Iteration 8 — faithful distilled-WAN Tier-0 UNBLOCKED + run (resolves I14)
+
+**Trigger:** new GPU box provided (`104.202.252.41`) — **H200, 144 GB VRAM, 605 GB disk**
+(vs the 32 GB box). I14 unblocked.
+
+**Done:** installed torch/diffusers/peft; downloaded WAN 2.1 1.3B diffusers (~29 GB, fits
+easily) + the 1.3B CausVid LoRA; ran `tier0_distilled_wan.py`.
+
+**Real result (H200):** monolithic 30-step = 30.0 s; **distilled proposer (CausVid 6-step)
+= 5.26 s → 5.71×**; verifier refine 15-step = 10.0 s; coarse-to-fine total = 15.24 s →
+**1.97×**; refined↔coarse **NCC 0.966** (alignment holds on real WAN); CausVid 6-step
+frame is high-quality (evidence committed). Headline: a **genuine distilled proposer is
+5.7× cheaper** than monolithic — vs 1.35× for the non-distilled CogVideoX proposer
+(confirms ADR 0004 §3.1).
+
+**Bugs found + fixed (real testing loop):**
+
+| ID | Issue | Fix |
+|----|-------|-----|
+| I15 | `WanVideoToVideoPipeline(**pipe.components)` failed: WanPipeline carries a `transformer_2` slot the vid2vid pipeline rejects. | Pass only its 5 expected modules. |
+| I16 | WAN pipelines return **np frames** (not PIL like CogVideoX) → `.convert()` crashed. | `_np()` now robust to PIL / np.ndarray / float[0,1]. |
+
+**Result:** I14 resolved on a real ≥64 GB-disk H200; the faithful distilled-WAN Tier-0
+number is **5.7× (proposer) / 1.97× (coarse-to-fine)**, with strong layout alignment.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

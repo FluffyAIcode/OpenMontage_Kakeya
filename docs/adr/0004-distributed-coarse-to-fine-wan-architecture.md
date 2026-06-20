@@ -237,6 +237,37 @@ component**, not an optional heuristic.
 > next steps requiring more GPUs / disk. The single-step latent-MultiDiffusion
 > implementation for CogVideoX's 3D-RoPE DiT is a research-grade build (future).
 
+### Tier 0 (FAITHFUL distilled-WAN) — real CausVid proposer on WAN 2.1 (H200, 605 GB box)
+
+The CogVideoX Tier-0 used a non-distilled 8-step proposer → only 1.35×. This run uses a
+**genuine distilled proposer**: **Wan2.1-T2V-1.3B + CausVid LoRA**
+(`Wan21_CausVid_bidirect2_T2V_1_3B_lora_rank32`), with full WAN as the verifier
+(`WanVideoToVideoPipeline`). Run on a larger-disk H200 (the 32 GB box couldn't hold the
+29 GB WAN repo — I14). Script:
+[`tier0_distilled_wan.py`](../../services/video_infer_gateway/experiments/tier0_distilled_wan.py);
+metrics: [`tier01_evidence/tier0_distilled_wan_metrics.json`](tier01_evidence/tier0_distilled_wan_metrics.json).
+
+| Pass | Time | Speedup vs monolithic |
+|---|---|---|
+| monolithic full WAN (30-step) | 30.0 s | 1.0× (reference) |
+| **distilled proposer (CausVid, 6-step)** | **5.26 s** | **5.71×** |
+| verifier refine (full WAN vid2vid, 15-step) | 10.0 s | — |
+| **coarse-to-fine total** | **15.24 s** | **1.97×** |
+
+- align refined↔coarse **NCC 0.966** → the full-WAN verifier strongly **preserves the
+  distilled proposer's layout** (the alignment premise §3.1, now on real WAN).
+- distilled↔monolithic PSNR 9.3 → a *different sample* (**not lossless**, expected).
+- The CausVid 6-step proposer frame is **high quality and coherent** (evidence:
+  `tier01_evidence/wan_causvid_proposer_mid.png`) — distillation gives speed *and* quality.
+
+**Conclusion (the headline distilled-proposer number):** a **genuine distilled proposer is
+5.7× cheaper** than monolithic WAN (vs 1.35× for the non-distilled CogVideoX proposer),
+empirically confirming §3.1 — the real coarse-to-fine win needs a *distilled* proposer.
+Coarse-to-fine *with* a full-WAN refine is ~2× (the refine dominates at 10 s); for many
+uses the **distilled proposer output alone (5.7×, high quality) is the better operating
+point**, with the refine reserved for when extra fidelity is required. Multi-GPU parallel
+verifiers (§3.5) would compound this — still pending a ≥2-GPU box.
+
 ## References
 
 1. VEnhancer — https://arxiv.org/abs/2407.07667 ; https://github.com/Vchitect/VEnhancer
