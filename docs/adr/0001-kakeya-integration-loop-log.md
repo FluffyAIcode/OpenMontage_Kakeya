@@ -367,6 +367,34 @@ local, private text backend; video stays on CUDA (ADR 0002/0004).
 
 ---
 
+## Iteration 12 — distributed WAN across Mac mini + vast (different regions) — ADR 0006
+
+**Trigger:** "complete script for the cloud agent to use Mac mini GPU + vast GPU for
+distributed WAN inference."
+
+**Objective blockers stated:** B1 — WAN is CUDA-only; the Mac's MLX **cannot run WAN**
+(text only). B2 — cross-region RTT forbids tensor/pipeline parallelism (per-step tensors
+can't cross the wire). ⇒ tensor-parallel WAN across Mac+vast is impossible; the feasible
+design is a **heterogeneous, coarse-grained pipeline** (text on Mac, WAN on vast, only
+prompts+mp4 cross the wire).
+
+**Built (complete script set):** `services/distributed_wan/{worker.py,orchestrator.py,README.md}`.
+Worker = CUDA WAN tile node (distilled proposer + vid2vid refine, GPU-locked). Orchestrator =
+cloud-agent glue (Mac text via `KAKEYA_ENDPOINT` skip-not-fake + concurrent tile fan-out to
+`WAN_WORKERS` + weight-map merge).
+
+**Validated (real H200):** ran orchestrator **on the cloud VM** → vast worker **over a
+tunnel** → framework 3.9s → 4 tile refines → **seamless 1472×768** koi-pond video
+(`tier01_evidence/dwan_distributed_mid.png`). Mac plane skipped honestly (no reachable Mac).
+N workers ⇒ real parallel refine (per-worker GPU lock); 1 worker ⇒ serialized (expected).
+
+**Verdict:** "distributed WAN across Mac+vast" is delivered as the only feasible shape —
+**heterogeneous (Mac text + vast WAN), coarse-grained, region-tolerant**; tensor-parallel WAN
+across the two is not possible (B1/B2). Real multi-GPU WAN speedup = add co-located CUDA
+workers.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
