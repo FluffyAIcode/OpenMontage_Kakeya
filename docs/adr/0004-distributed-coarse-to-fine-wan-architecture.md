@@ -134,6 +134,71 @@ Build bottom-up so each tier proves the next is worth it. No mocks; real models 
 Each tier emits real artifacts (mp4 + ffprobe + seam/flicker metrics) recorded in the loop
 log, per the no-fake/no-simplify guideline.
 
+## 6. Real-GPU results — Tier 0 + Tier 1 (measured, H200)
+
+Run on the live H200 with **CogVideoX-2b** (a DiT video model; WAN weights did not fit
+the 3.2 GB free disk alongside the running gateway — the *mechanism* is what is
+validated, and per §1–3 it transfers to WAN). Script:
+[`services/video_infer_gateway/experiments/tier01_coarse_to_fine_tiling.py`](../../services/video_infer_gateway/experiments/tier01_coarse_to_fine_tiling.py).
+Raw metrics: [`tier01_evidence/metrics.json`](tier01_evidence/metrics.json).
+
+### Tier 0 — coarse-to-fine (proposer → verifier-refine vs monolithic)
+
+| Metric | Value | Reading |
+|---|---|---|
+| proposer (8-step T2V) | 10.6 s | the cheap "framework" pass |
+| verifier (vid2vid, strength 0.6, 24-step) | 17.3 s | high-detail completion |
+| coarse-to-fine total | 27.9 s | |
+| monolithic baseline (40-step) | 37.8 s | |
+| **wall-clock speedup** | **1.35×** | modest on ONE GPU with a NON-distilled proposer |
+| align refined↔coarse (NCC) | **0.932** | refine **preserves** the proposer's layout → the alignment premise (§3.1) holds |
+| refined↔monolithic (PSNR) | 13.2 dB | **not the same sample** → confirms §3.4: coarse-to-fine is *not lossless* |
+
+**Conclusion:** the proposer→verifier flow works and is layout-faithful (high NCC), but
+single-GPU speedup with a non-distilled proposer is only ~1.35×. The real speedup needs
+(a) a **distilled few-step proposer** (much cheaper framework pass) and (b) **multi-GPU
+parallel verifiers** — exactly §3.1 + §3.5.
+
+### Tier 1 — decompose → independent tile refine → merge (the f_θ question)
+
+2×2 native-720×480 tiles, 160 px overlap, 1280×800 canvas; each tile refined
+independently (vid2vid, strength 0.5, 20-step); 4 tiles in **55.7 s** (13.9 s/tile,
+serial on one GPU → parallelizable on multi-GPU).
+
+Seam discontinuity at the **true tile edges**, normalized by interior texture
+(>1 = visible stitch; ~1 = invisible):
+
+| Merge | vertical seam | horizontal seam | verdict |
+|---|---|---|---|
+| **Hard** (naive overwrite) | **5.24×** | **5.12×** | glaring stitch lines — the 拼接错误 |
+| **Blended** (spatial weight-map f_θ) | **0.85×** | **1.15×** | seam ≈ ordinary texture |
+| reduction | **−84 %** | **−78 %** | |
+
+Visual evidence (mid-frame): hard merge shows obvious rectangular seams; blended is
+coherent.
+
+![hard merge — visible seams](tier01_evidence/t1_hard_mid.png)
+![weight-map blended — seams gone](tier01_evidence/t1_blended_mid.png)
+
+**Conclusions (honest):**
+
+1. **拼接错误 is real and severe** without a merge map: naive hard merge = **~5× seams**.
+2. A **heuristic f_θ** (spatial-weight-map blending, MultiDiffusion/PatchVSR-style)
+   removes ~**80 %** of the seam on this content — so a *learned* f_θ is **not required
+   for low-frequency content**.
+3. **Caveat (content-dependent):** this clip is low-frequency (water/light). Where
+   independently-refined tiles **hallucinate divergent structure** (faces, text, hard
+   edges crossing a boundary), post-hoc pixel averaging **ghosts** rather than fixes —
+   which is why the robust solution is **denoise-time fusion** (MultiDiffusion in latent
+   space, fusing every step) **or a learned f_θ**. The "refine fully, then merge" order
+   the proposal implies is the *fragile* case; consistency should act **during** denoise.
+4. **Per-tile cost is serial here** (one GPU); the parallel-verifier speedup needs
+   multi-GPU (§3.5).
+
+This empirically confirms ADR 0004's verdict: the architecture is sound; the f_θ role is
+**necessary** (hard merge is unacceptable) and **partly solvable by a heuristic**, with a
+learned/denoise-time version reserved for hard content.
+
 ## References
 
 1. VEnhancer — https://arxiv.org/abs/2407.07667 ; https://github.com/Vchitect/VEnhancer

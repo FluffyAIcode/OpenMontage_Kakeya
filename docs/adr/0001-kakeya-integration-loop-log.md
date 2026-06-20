@@ -170,6 +170,37 @@ mock tests explicitly demoted to "not the correctness gate" (ADR 0002 §0).
 
 ---
 
+## Iteration 5 — Tier 0 / Tier 1 real-GPU experiments (ADR 0004 §6)
+
+**Trigger:** "proceed tier 0 and tier 1 on the GPU real environment."
+
+**Built / ran (real, H200, CogVideoX-2b — WAN weights didn't fit 3.2 GB free disk; the
+mechanism transfers per ADR 0004 §1–3):**
+`services/video_infer_gateway/experiments/tier01_coarse_to_fine_tiling.py`.
+
+**Tier 0 (coarse-to-fine):** proposer 8-step (10.6 s) → vid2vid verifier 24-step (17.3 s)
+= 27.9 s vs monolithic 40-step = 37.8 s → **1.35× wall-clock** (single GPU, non-distilled
+proposer). Refine↔coarse NCC **0.932** (layout preserved → alignment holds); refined↔full
+PSNR 13.2 (**not lossless**). Confirms: real speedup needs a distilled proposer + multi-GPU.
+
+**Tier 1 (decompose → independent tile refine → merge):** 2×2 native tiles, 160 px overlap.
+Corrected seam metric (measured at true tile edges): **hard merge = 5.2×/5.1× interior
+texture (glaring seams)**; **weight-map blend = 0.85×/1.15× (≈80 % reduction, visually
+gone)**. Visual evidence committed (`tier01_evidence/`).
+
+**Issues collected**
+
+| ID | Issue | Disposition |
+|----|-------|-------------|
+| I10 | First in-script seam metric sampled the overlap **centre** (where the hard merge is coincidentally continuous because the later tile overwrites it) → reported blending as *worse*, contradicting the obvious visual seams. | **Fixed:** metric now measures at **true tile edges**; recomputed on the saved real frames → hard 5.2×, blended 0.85× (matches the eye). |
+| I11 | Heuristic post-hoc blending fixes low-frequency seams but **ghosts divergent hallucinated structure** → robust fix is **denoise-time fusion (latent MultiDiffusion) or a learned f_θ**; the "refine fully then merge" order is the fragile case. | Recorded in ADR 0004 §6; gates whether a learned f_θ is worth building. |
+
+**Result:** the proposer→parallel-verifier→merge architecture is empirically sound on real
+GPU; f_θ is **necessary** (hard merge unacceptable) and **partly solvable by a heuristic**;
+single-GPU speedup is modest (distilled proposer + multi-GPU needed for the real win).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
