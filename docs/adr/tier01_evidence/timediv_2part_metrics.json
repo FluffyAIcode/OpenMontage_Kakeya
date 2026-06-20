@@ -1,0 +1,21 @@
+{
+  "model": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+  "canvas_px": [
+    480,
+    1472
+  ],
+  "parts": 2,
+  "overlap_px": 192,
+  "frames": 25,
+  "proposer_s": 2.69,
+  "verifier_part1_s": 4.36,
+  "verifier_part2_s": 4.35,
+  "verifier_total_timedivision_s": 8.71,
+  "peak_gb_part1": 24.11,
+  "peak_gb_part2": 24.11,
+  "peak_gb_timedivision": 24.11,
+  "peak_gb_full_canvas_single_pass": 24.11,
+  "memory_saved_vs_full_pass_gb": 0.0,
+  "f_theta_seam_excess": 1.172,
+  "full_single_s": 4.48
+}

@@ -395,6 +395,33 @@ workers.
 
 ---
 
+## Iteration 13 — single-GPU time-division validation (ADR 0007)
+
+**Trigger:** "single GPU: proposer framework → split in 2 → verifier does part 1 then part 2
+(time-division) → f_θ integrates → validate the architecture."
+
+**Built/ran** `time_division_2part_wan.py` (N-part, real WAN on one H200):
+- **2-part** (1472×480×25): proposer 2.7s; verifier 4.4s+4.4s time-division; f_θ seam-excess
+  **1.17 (seamless)**; peak 24.1GB.
+- **4-part** (2752×480×49): proposer 5.6s; verifier 4×9.5s; f_θ seam-excess **1.24
+  (seamless 2752×480 = 3.3× native width)**; peak 24.4GB.
+
+**Findings:**
+- **Feasibility VALIDATED** ✓ — proposer → time-division verifier → f_θ → seamless
+  beyond-native-resolution video on ONE GPU; linear time in #parts; framework anchors parts
+  → seamless.
+- **Bounded memory NOT realized on the H200 (I20):** peak constant ~24GB regardless of
+  parts/frames/canvas; full-canvas single pass didn't OOM even at 2752×480×49. WAN is already
+  memory-bounded (WAN-VAE bounded-length design + SDPA attention + resident weights dominate).
+  Time-division's memory benefit is **conditional** — only on a GPU too small to hold the
+  constant footprint (16/24GB cards, WAN-14B). On the H200 the win is resolution scaling +
+  seamless integration + (with more GPUs) parallelism, not memory.
+
+**Verdict:** architecture feasible + validated; bounded-memory is a real but conditional
+benefit (memory-constrained GPUs only).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
