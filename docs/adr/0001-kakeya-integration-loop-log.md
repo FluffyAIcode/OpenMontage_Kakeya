@@ -226,6 +226,41 @@ precise, evidence-backed refinement of the f_θ requirement.
 
 ---
 
+## Iteration 7 — faithful distilled-WAN Tier-0: BLOCKED by disk (I14)
+
+**Trigger:** "free CogVideoX/Gemma and run the real distilled-WAN Tier-0 speedup."
+
+**Done:** freed everything (CogVideoX already gone with the dead gateway; Gemma-4 26B was
+**never** resident — only Qwen3-0.6B ran; freed it + pip cache) → 18 GB free / 32 GB disk.
+Confirmed the diffusers pieces exist: `WanVideoToVideoPipeline` (native vid2vid) + a 1.3B
+**CausVid** distill LoRA (`Wan21_CausVid_bidirect2_T2V_1_3B_lora_rank32.safetensors`).
+Wrote the ready experiment `services/video_infer_gateway/experiments/tier0_distilled_wan.py`
+(monolithic WAN vs CausVid-distilled proposer + full-WAN verifier refine).
+
+**Blocker I14 (hard, environmental):** the WAN 2.1 1.3B **diffusers** repo is **~29 GB**
+because its **UMT5-XXL text encoder is fp32 = 22.7 GB**. Measured across 6 re-uploads —
+all carry the fp32 encoder. A bf16 text encoder exists only in **original-Wan `.pth`**
+format (11.4 GB; key layout ≠ diffusers, needs remapping, and converting it needs ~22 GB
+transient). No clean drop-in **bf16 diffusers** WAN repo exists; no transformers-format
+bf16 UMT5 encoder found. So the fp32 repo **does not fit** the 32 GB disk (18 GB free),
+and the bf16 assembly is fragile (in-memory key remap of the original `.pth`).
+
+**Decision (no fake):** do NOT relabel a CogVideoX run as distilled-WAN. **Escalate the
+disk blocker.** The script is committed and ready.
+
+**Unblock (either):**
+1. **Resize the vast.ai instance disk to ≥ 64 GB** (or relaunch with a bigger disk) →
+   then `tier0_distilled_wan.py` runs the faithful CausVid-distilled-WAN Tier-0 in ~5 min.
+2. Authorize a **best-effort bf16 assembly** (techfreakworm bf16 diffusers transformer +
+   official VAE + in-memory remap of the original bf16 UMT5 `.pth`) — fits 18 GB but the
+   text-encoder remap may fail; higher risk, may burn GPU time.
+
+| ID | Item | Status |
+|----|------|--------|
+| I14 | WAN-diffusers = 29 GB (fp32 UMT5 22.7 GB) > 32 GB disk; bf16 only in original format. | **Blocked** — needs ≥64 GB disk (clean) or a fragile bf16 remap. Experiment committed & ready. |
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
