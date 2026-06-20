@@ -199,6 +199,44 @@ This empirically confirms ADR 0004's verdict: the architecture is sound; the f_�
 **necessary** (hard merge is unacceptable) and **partly solvable by a heuristic**, with a
 learned/denoise-time version reserved for hard content.
 
+### Tier 1b — does shared-noise consistency fix the ghosting? (resolves I11)
+
+Follow-up to I11. On **high-frequency content**, compared independent-seed tiles vs
+**shared-noise** tiles (the cheap, robust form of denoise-time consistency), measuring
+**overlap disagreement** = mean abs diff between the two tiles' content in their shared
+overlap band (high → ghosting). Script:
+[`tier1b_latent_consistency.py`](../../services/video_infer_gateway/experiments/tier1b_latent_consistency.py);
+metrics: [`tier01_evidence/tier1b_metrics.json`](tier01_evidence/tier1b_metrics.json).
+
+| Condition | overlap disagreement (v / h) | blended seam (v / h) |
+|---|---|---|
+| independent seeds | 3.63 / 3.81 | 1.75 / 1.24 |
+| **shared noise** | **4.02 / 2.58** | 2.28 / 1.24 |
+
+**Surprising, important result: shared noise did NOT reduce cross-tile disagreement**
+(vertical even rose; net −11 %). The divergence is **context/position-driven, not
+noise-driven**: each tile sees a different crop, different 3D-RoPE positions, and a
+different global self-attention context, so the *same* overlap pixels are generated
+differently regardless of the seed. This is PatchVSR's "DiTs are not native for
+patch-level generation," confirmed at the mechanism level.
+
+**Therefore:** neither post-hoc pixel blending (Tier 1) **nor** shared-noise (Tier 1b)
+fixes cross-tile divergence on non-trivial content. The f_θ / merge-consistency role
+**must** be realized as **denoise-time latent fusion** (true MultiDiffusion — average the
+overlap *latents* every denoise step so tiles cannot diverge) **or a learned cross-tile
+consistency model**. This *strengthens* the case that f_θ is a **necessary, non-trivial
+component**, not an optional heuristic.
+
+> Caveat: CogVideoX-2b at strength 0.7 from a rough 8-step coarse produced muddy
+> high-frequency output, so the visual frames are dark; the quantitative
+> overlap-disagreement metric (independent of that murk) is the reliable evidence.
+
+> Not run (hardware): **multi-GPU** parallel-verifier wall-clock (this box has one H200),
+> and a **faithful distilled-WAN proposer** (needs freeing the resident model + ~13 GB
+> WAN + a CausVid/Self-Forcing checkpoint; disk = 3.2 GB free). Both are flagged as
+> next steps requiring more GPUs / disk. The single-step latent-MultiDiffusion
+> implementation for CogVideoX's 3D-RoPE DiT is a research-grade build (future).
+
 ## References
 
 1. VEnhancer — https://arxiv.org/abs/2407.07667 ; https://github.com/Vchitect/VEnhancer

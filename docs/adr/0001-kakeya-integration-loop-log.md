@@ -201,6 +201,31 @@ single-GPU speedup is modest (distilled proposer + multi-GPU needed for the real
 
 ---
 
+## Iteration 6 — Tier 1b consistency test (resolves I11; ADR 0004 §6)
+
+**Trigger:** "proceed to a distilled-proposer run or a multi-GPU/latent-fusion test."
+Multi-GPU = impossible (one H200). Faithful distilled-WAN = disk-blocked (3.2 GB free).
+So ran the **latent/consistency test** (disk-safe, resident CogVideoX) to resolve I11.
+
+**Experiment:** high-frequency prompt; independent-seed tiles vs **shared-noise** tiles;
+metric = cross-tile **overlap disagreement**.
+
+**Result (real, H200):** shared noise did **NOT** reduce overlap disagreement
+(v 3.63→4.02, h 3.81→2.58; net −11 %). The divergence is **context/position-driven**
+(different crop, different 3D-RoPE positions, different global attention context), not
+noise-driven — PatchVSR's "DiTs not native for patch-level," confirmed.
+
+| ID | Finding | Disposition |
+|----|---------|-------------|
+| I12 | Neither post-hoc pixel blend (I11) nor shared-noise fixes cross-tile divergence on non-trivial content. f_θ/merge-consistency **must** be **denoise-time latent fusion** (latent MultiDiffusion) or a **learned** consistency model. | Strengthens the case for f_θ as a necessary component; per-step latent MultiDiffusion on CogVideoX's 3D-RoPE DiT is a research-grade build (future). |
+| I13 | Multi-GPU + faithful distilled-WAN not runnable on this box (1 GPU, 3.2 GB disk). | Flagged as next steps needing more GPUs / freeing the gateway model + ~13 GB. |
+
+**Result:** I11 resolved — the merge-consistency must act *during* denoising or be learned;
+cheap levers (post-hoc blend, shared noise) are insufficient on hard content. This is a
+precise, evidence-backed refinement of the f_θ requirement.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
