@@ -1,8 +1,10 @@
-"""Tests for the warm video-inference gateway seam (ADR 0002).
+"""OFFLINE SMOKE tests for the warm video-inference gateway seam (ADR 0002).
 
-Fully offline: a stdlib HTTP server stands in for the gateway so we can exercise
-routing, all three response shapes (raw mp4 / video_url / video_b64), health,
-availability widening, and error paths without torch/diffusers/CUDA/GPU.
+NOT THE CORRECTNESS GATE. Per ADR 0002 §0 (no fallback/mock/fake/simplify), the
+binding correctness gate is `tests/integration/test_real_gpu.py`, which drives a
+REAL diffusers gateway on a GPU (CogVideoX-2b verified: h264 720x480, 49 frames).
+The stdlib mock server below is fast offline coverage of routing/parsing/error
+paths only — it is explicitly NOT evidence the integration generates real video.
 """
 
 from __future__ import annotations

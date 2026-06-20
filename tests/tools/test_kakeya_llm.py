@@ -1,8 +1,10 @@
-"""Tests for the Kakeya text-generation integration.
+"""OFFLINE SMOKE tests for the Kakeya text-generation integration.
 
-These run fully offline: a tiny stdlib HTTP server stands in for a real
-Kakeya OpenAI-compatible shim so we can exercise generate / batch / health /
-error-isolation / availability-gating without torch, CUDA, or a model download.
+NOT THE CORRECTNESS GATE. Per ADR 0002 §0 (no fallback/mock/fake/simplify), the
+binding correctness gate is `tests/integration/test_real_gpu.py`, which runs
+against a REAL, GPU-served Kakeya server. The stdlib mock server below exists only
+as fast offline coverage of pure-function logic and the HTTP round-trip shape; it
+is explicitly NOT evidence that the integration works end-to-end.
 """
 
 from __future__ import annotations
@@ -191,8 +193,8 @@ def test_batch_concurrency_clamped_to_prompt_count():
     assert KakeyaLLM._resolve_concurrency({"concurrency": 0}, 5) == 1
     # Above the hard cap is capped.
     assert KakeyaLLM._resolve_concurrency({"concurrency": 9999}, 1000) == 64
-    # Garbage falls back to the default (clamped by prompt count).
-    assert KakeyaLLM._resolve_concurrency({"concurrency": "x"}, 100) == 8
+    # Garbage falls back to the default (sequential — safe for the HTTP shim).
+    assert KakeyaLLM._resolve_concurrency({"concurrency": "x"}, 100) == 1
 
 
 def test_batch_actually_runs_concurrently(monkeypatch):
