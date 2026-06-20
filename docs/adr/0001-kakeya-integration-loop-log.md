@@ -77,6 +77,57 @@ nothing to batch. Iteration 1's batch path left W2 entirely on the table.
 
 ---
 
+## Iteration 3 — course correction: unify the LOCAL VIDEO models (ADR 0002)
+
+**Trigger:** maintainer clarified the real intent — not to replace an OpenMontage
+module, but to run the four open-source video models (WAN 2.1, Hunyuan, CogVideo,
+LTX) *on a unified inference engine* serving OpenMontage's orchestration + video
+stream, ideally Kakeya.
+
+**Investigated (code-level, not README-level)**
+
+- Read Kakeya's `runtime.proto`, `backends/`, `bridge/`, and grepped for
+  diffusion/video/vae/latent. **Finding (硬伤):** Kakeya is an LLM *token* engine —
+  token-only gRPC contract, "diffusion" = text-diffusion LLM, features are AR-decode
+  concepts. It has **no path** to host DiT video-diffusion models. The one
+  "multimodal" note is image/audio *input* to an LLM, output still tokens.
+- Read OpenMontage's `tools/video/_shared.py`: all four tools share
+  `generate_local_video()` which does `Pipeline.from_pretrained()` **per call** —
+  cold load every time, no warm reuse / VRAM pool / batching. Real inefficiency.
+- Found the right precedent already in-repo: `generate_ltx_modal_video()` routes to a
+  standalone HTTP inference server (`MODAL_LTX2_ENDPOINT_URL`).
+
+**Decided (ADR 0002):** decouple the goal (unified warm backend) from the wrong
+mechanism (Kakeya). Add an engine-agnostic **video-inference gateway** seam; the four
+tools route to one warm server over HTTP (`VIDEO_INFER_ENDPOINT`), falling back to
+in-process diffusers. Kakeya stays the **text** engine (ADR 0001). The honest
+"unification" is a two-engine local inference plane (text→Kakeya, video→diffusion
+gateway), both behind existing selectors.
+
+**Built**
+
+- `tools/video/video_infer_client.py` — gateway client + ADR 0002 §5 contract
+  (`/healthz`, `POST /v1/video/generations`; accepts raw mp4 / video_url / video_b64).
+- Routing seam in `_shared.generate_local_video()` (short-circuits before any torch
+  import). `local_generation_status()` now reports AVAILABLE when a gateway is set —
+  **without** a local torch/diffusers install.
+
+**Tested (+11, suite now 363 passed)**
+
+- Endpoint resolution, availability widening, health, all three response shapes,
+  i2v image_b64 encoding, unknown-variant + unsupported-i2v errors, and an
+  **end-to-end routing test that passes with torch NOT installed** (proves the seam
+  short-circuits the in-process path).
+
+**Issues collected**
+
+| ID | Issue | Disposition |
+|----|-------|-------------|
+| I6 | We don't ship the gateway *server* (needs GPU; can't CI here). | Documented; client+contract+tests shipped now, reference server is a follow-up PR. |
+| I7 | Client-side has no cross-model batching; the throughput win lives *inside* the gateway (warm pool + admission). | By design — gateway owns batching; OpenMontage stays a thin client. |
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

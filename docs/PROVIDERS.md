@@ -715,6 +715,27 @@ These tools require only FFmpeg or Python packages — no GPU, no API key.
 
 ---
 
+### Warm Video-Inference Gateway (unify the 4 local models)
+
+> The local video models (WAN 2.1, Hunyuan, CogVideo, LTX) normally **cold-load a
+> diffusers pipeline on every call**. Set `VIDEO_INFER_ENDPOINT` to route all four to
+> **one warm inference server** instead — no local `torch`/`diffusers` needed in
+> OpenMontage. The orchestration (`video_selector`) is unchanged; only the execution
+> backend moves behind HTTP. Full design + server contract:
+> `docs/adr/0002-unified-local-video-inference-backend.md`.
+
+| Tool/Env | Notes |
+|----------|-------|
+| `VIDEO_INFER_ENDPOINT` (+ optional `VIDEO_INFER_API_KEY`) | Base URL of a warm gateway hosting WAN/Hunyuan/CogVideo/LTX. Makes the four local video tools `available` without a local GPU stack. |
+
+**Important:** this gateway serves **DiT video diffusion** — it is **NOT Kakeya**.
+Kakeya is an LLM *token* engine and cannot host video diffusion (ADR 0002 §2). The
+honest unification is a **two-engine local inference plane**: text → Kakeya
+(`text_generation`), video → diffusion gateway (`video_generation`), both behind
+OpenMontage's existing selectors.
+
+---
+
 ### Text Generation (optional local LLM — Kakeya)
 
 > **OpenMontage runs no LLM of its own.** The host agent is the creative
