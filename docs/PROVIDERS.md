@@ -715,6 +715,63 @@ These tools require only FFmpeg or Python packages — no GPU, no API key.
 
 ---
 
+### Warm Video-Inference Gateway (unify the 4 local models)
+
+> The local video models (WAN 2.1, Hunyuan, CogVideo, LTX) normally **cold-load a
+> diffusers pipeline on every call**. Set `VIDEO_INFER_ENDPOINT` to route all four to
+> **one warm inference server** instead — no local `torch`/`diffusers` needed in
+> OpenMontage. The orchestration (`video_selector`) is unchanged; only the execution
+> backend moves behind HTTP. Full design + server contract:
+> `docs/adr/0002-unified-local-video-inference-backend.md`.
+
+| Tool/Env | Notes |
+|----------|-------|
+| `VIDEO_INFER_ENDPOINT` (+ optional `VIDEO_INFER_API_KEY`) | Base URL of a warm gateway hosting WAN/Hunyuan/CogVideo/LTX. Makes the four local video tools `available` without a local GPU stack. |
+
+**Important:** this gateway serves **DiT video diffusion** — it is **NOT Kakeya**.
+Kakeya is an LLM *token* engine and cannot host video diffusion (ADR 0002 §2). The
+honest unification is a **two-engine local inference plane**: text → Kakeya
+(`text_generation`), video → diffusion gateway (`video_generation`), both behind
+OpenMontage's existing selectors.
+
+---
+
+### Text Generation (optional local LLM — Kakeya)
+
+> **OpenMontage runs no LLM of its own.** The host agent is the creative
+> intelligence. This provider is strictly for **offloading mechanical, batch
+> text** (image-prompt expansion, subtitle translation, caption/hook variants,
+> alt-text) to a [Kakeya](https://github.com/FluffyAIcode/Kakeya-LLM-Inference-engine)
+> inference server **you run yourself**. See
+> `docs/adr/0001-kakeya-llm-inference-integration.md` for the full design and an
+> honest performance evaluation.
+
+| Tool | Env Var | Notes |
+|------|---------|-------|
+| `kakeya_llm` | `KAKEYA_ENDPOINT` (+ optional `KAKEYA_MODEL`, `KAKEYA_API_KEY`) | Talks to a user-run Kakeya OpenAI-compatible server. No torch/CUDA added to OpenMontage. |
+| `llm_selector` | — | Auto-routes to any available `text_generation` provider. |
+
+**What you actually get:**
+
+- **CPU server:** zero per-token cost + on-device privacy for batch text. Quality
+  is limited by the small model you run; **no speed win**.
+- **GPU server (CUDA):** the above, plus real throughput on batch jobs via Kakeya's
+  batched scheduler, and long-context handling via its bounded-memory KV path.
+
+**What you should NOT do with it:** route creative scripting or narrative decisions
+through it — keep those with the host agent. It is alpha software; treat it as an
+optional accelerator for chores, not a core dependency.
+
+Setup:
+
+```bash
+# 1. Run a Kakeya server yourself (see the Kakeya repo quickstart).
+# 2. Point OpenMontage at it:
+KAKEYA_ENDPOINT=http://127.0.0.1:8000
+```
+
+---
+
 ## Provider-to-Tool Mapping
 
 | Provider | Env Var | Tools Unlocked | Cost |
@@ -734,6 +791,7 @@ These tools require only FFmpeg or Python packages — no GPU, no API key.
 | **Local GPU** | `VIDEO_GEN_LOCAL_ENABLED` | `wan_video`, `hunyuan_video`, `cogvideo_video`, `ltx_video_local` | Free (GPU required) |
 | **Local Diffusion** | — (install only) | `local_diffusion` | Free (GPU required) |
 | **Modal** | `MODAL_LTX2_ENDPOINT_URL` | `ltx_video_modal` | Self-hosted cloud |
+| **Kakeya** | `KAKEYA_ENDPOINT` | `kakeya_llm` (text_generation) | Free (local; GPU for speed) |
 
 ---
 
@@ -751,6 +809,7 @@ How many providers cover each capability:
 | **Analysis** | — | WhisperX, Scene Detect, Frame Sampler, CLIP/BLIP-2 | All free |
 | **Enhancement** | — | Upscale, BG Remove, Face Enhance, Face Restore | All free |
 | **Avatar** | — | SadTalker, Wav2Lip | All free |
+| **Text Generation** (batch chores only) | — | Kakeya (user-run server) | Free (local) |
 
 ---
 

@@ -1,0 +1,27 @@
+{
+  "model": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+  "device": "cuda:0",
+  "canvas_latent": [
+    96,
+    184
+  ],
+  "canvas_px": [
+    768,
+    1472
+  ],
+  "tiles": "2x2 native 832x480, overlap 192px",
+  "steps": 20,
+  "frames": 25,
+  "independent_merge": {
+    "seam_v_ratio": 0.279,
+    "seam_h_ratio": 2.861,
+    "t_s": 16.05
+  },
+  "multidiffusion": {
+    "seam_v_ratio": 0.322,
+    "seam_h_ratio": 2.953,
+    "t_s": 15.75
+  },
+  "seam_v_reduction_pct": -15.4,
+  "seam_h_reduction_pct": -3.2
+}

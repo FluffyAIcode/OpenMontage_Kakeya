@@ -1,0 +1,15 @@
+{
+  "model": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+  "lora": "Wan21_CausVid_bidirect2_T2V_1_3B_lora_rank32.safetensors",
+  "dims": "832x480x49",
+  "tier0_distilled": {
+    "t_monolithic_30step_s": 30.01,
+    "t_distilled_proposer_6step_s": 5.26,
+    "t_verifier_refine_15step_s": 9.98,
+    "t_coarse_to_fine_s": 15.24,
+    "speedup_distilled_proposer_alone_x": 5.71,
+    "speedup_coarse_to_fine_x": 1.97,
+    "align_refined_vs_coarse_ncc": 0.9658,
+    "distilled_vs_monolithic_psnr": 9.3
+  }
+}

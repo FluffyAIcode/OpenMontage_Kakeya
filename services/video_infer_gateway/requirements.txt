@@ -1,0 +1,14 @@
+# Warm video-inference gateway (ADR 0002). Real diffusers serving — needs a GPU.
+# torch is installed separately with the right CUDA index, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+diffusers>=0.31
+transformers>=4.44
+accelerate
+fastapi
+uvicorn[standard]
+imageio
+imageio-ffmpeg
+sentencepiece
+pillow
+safetensors
+requests

@@ -1,0 +1,86 @@
+# ADR 0006 — Distributed WAN inference across a Mac mini + vast GPUs in different regions
+
+- **Status:** Implemented (heterogeneous pipeline) + validated on real GPU
+- **Date:** 2026-06-20
+- **Deciders:** OpenMontage maintainers
+- **Question:** A complete script letting a cloud agent use a **Mac mini GPU** and a **vast
+  GPU** (in **different regions**) for **distributed WAN inference**.
+- **Related:** ADR 0002 (video gateway), ADR 0004 (coarse-to-fine capstone), ADR 0005 (mac bridge)
+
+---
+
+## 1. The two hard blockers (objective)
+
+| # | Blocker | Consequence |
+|---|---------|-------------|
+| **B1** | **WAN runs only on CUDA.** WAN 2.1 is a PyTorch/diffusers model; the Mac's Apple-Silicon **MLX** GPU has no WAN implementation. | The Mac **cannot be a WAN compute node** at all. It can run Kakeya's MLX *LLM* (text), not video. |
+| **B2** | **Cross-region forbids tensor/pipeline parallelism.** Splitting one WAN forward needs sub-ms interconnect; cross-region RTT is 10s–100s ms **per exchange**. | Per-denoise-step tensor exchange is hopeless. Only **coarse, latency-tolerant** traffic (prompts, mp4 clips) may cross the wire. |
+
+**Therefore tensor-parallel "WAN across Mac + vast" is impossible.** What *is* feasible is a
+**heterogeneous, coarse-grained pipeline** that splits work by capability and keeps all
+per-step tensors on-box.
+
+## 2. The design (what runs where)
+
+```
+ cloud agent (orchestrator.py)
+    1) text: prompt -> per-tile prompts   ──HTTP──►  Mac mini (MLX)  Kakeya text server  [KAKEYA_ENDPOINT]
+    2) framework + 4) tile refines (mp4)  ──HTTP──►  vast CUDA worker(s) (worker.py)     [WAN_WORKERS]
+    3) upscale+crop   5) weight-map merge -> final.mp4
+```
+
+- **Mac mini (MLX, different region):** Kakeya MLX text server (ADR 0005). Specializes the
+  prompt into per-tile prompts. **Text only** — its real capability. *Optional*; if
+  `KAKEYA_ENDPOINT` is unset/unreachable the orchestrator **skips it (logged), never fakes it.**
+- **vast CUDA worker(s) (`worker.py`):** distilled **CausVid proposer** (framework) +
+  full-WAN **vid2vid refine** (tiles). **Run ≥2 on co-located CUDA GPUs for real parallel
+  refine.** WAN runs *only* here.
+- **cloud agent (`orchestrator.py`):** framework → upscale → native-tile crops → **concurrent
+  tile dispatch round-robin across workers** → weight-map merge. The framework anchors tile
+  overlaps, so independent per-worker refine stays seamless (ADR 0004 capstone) — which is
+  exactly what lets different tiles run on different workers.
+
+**Wire traffic:** prompts (bytes) + base64-mp4 clips only. **No per-step tensors ever leave a
+box** → region-tolerant.
+
+## 3. Validation (real, on the vast H200)
+
+Ran the orchestrator **on the cloud agent VM**, reaching the vast WAN worker **over an SSH
+tunnel** (cross-machine), `KAKEYA_ENDPOINT` unset (Mac skipped honestly):
+
+```
+[orch] 1 WAN worker(s); mac_text=no
+[orch] worker http://localhost:9000 OK device=cuda
+[orch] KAKEYA_ENDPOINT unset -> Mac text plane skipped (base prompt)
+[orch] framework (distilled proposer) on worker[0]... (25,480,832,3) in 3.94s
+[orch] refining 4 tiles across 1 worker(s)...  (tiles refined, lock-serialized on 1 GPU)
+ORCH_DONE {"workers":1,"mac_text":false,"canvas_px":[768,1472],"tiles":"2x2","tile_refine_wall_s":20.6}
+```
+
+Output: a **seamless 1472×768** koi-pond video (`tier01_evidence/dwan_distributed_mid.png`),
+produced end-to-end by **cloud agent → remote vast CUDA worker**. Confirms the pipeline,
+the network transport, and seamless tiled merge in the distributed setting.
+
+- **Distributed (real):** with **N workers** on co-located CUDA GPUs, the orchestrator's
+  concurrent round-robin gives parallel tile refine (each worker has its own GPU lock).
+  Single-worker here → tiles serialize (one GPU); that is the expected single-GPU behavior.
+- **Mac plane:** wired and skip-not-fake; plugging a reachable `KAKEYA_ENDPOINT` (Mac via
+  Tailscale) adds the text plane in parallel — not validated here (no reachable Mac), per
+  ADR 0005 (the Mac is the owner's local machine).
+
+## 4. Files
+
+- `services/distributed_wan/worker.py` — CUDA WAN tile worker (`/v1/framework`,
+  `/v1/refine_tile`, `/healthz`); one per GPU; GPU-locked.
+- `services/distributed_wan/orchestrator.py` — cloud-agent orchestrator (Mac text +
+  fan-out + merge), stdlib HTTP, region-tolerant.
+- `services/distributed_wan/README.md` — cross-region deployment (Tailscale for the Mac,
+  worker URLs/tunnels for vast).
+
+## 5. Boundary (do not regress)
+
+- **WAN = CUDA only.** The Mac never runs WAN (B1). For true multi-GPU WAN speedup, add
+  CUDA workers (same region/datacenter ideally).
+- **Cross-region = coarse traffic only** (B2): prompts + mp4. Never route per-step tensors
+  or spec-decode drafts over WAN (matches ADR 0003/0005).
+- **No fake:** the Mac text plane is skipped-not-faked when unreachable.

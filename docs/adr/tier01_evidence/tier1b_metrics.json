@@ -1,0 +1,24 @@
+{
+  "model": "THUDM/CogVideoX-2b",
+  "device": "cuda",
+  "prompt_kind": "high_frequency_structured",
+  "diff_seed": {
+    "t_tiles_s": 69.29,
+    "overlap_disagreement_v": 3.627,
+    "overlap_disagreement_h": 3.814,
+    "blended_seam": {
+      "v_ratio": 1.748,
+      "h_ratio": 1.241
+    }
+  },
+  "shared_seed": {
+    "t_tiles_s": 69.4,
+    "overlap_disagreement_v": 4.022,
+    "overlap_disagreement_h": 2.578,
+    "blended_seam": {
+      "v_ratio": 2.279,
+      "h_ratio": 1.236
+    }
+  },
+  "overlap_disagreement_reduction_pct_v": -10.9
+}

@@ -152,6 +152,15 @@ def local_generation_enabled() -> bool:
 
 
 def local_generation_status() -> ToolStatus:
+    # A configured warm video-inference gateway makes the tool available WITHOUT
+    # a local torch/diffusers install — the gateway owns those deps and hosts the
+    # models warm (ADR 0002). This is the "thin orchestrator -> warm backend" path.
+    from tools.video.video_infer_client import video_infer_endpoint
+
+    if video_infer_endpoint():
+        return ToolStatus.AVAILABLE
+
+    # Otherwise fall back to true in-process diffusers generation.
     if not local_generation_enabled():
         return ToolStatus.UNAVAILABLE
     try:
@@ -164,10 +173,15 @@ def local_generation_status() -> ToolStatus:
 
 def local_install_instructions() -> str:
     return (
-        "Enable local video generation and install the diffusers stack:\n"
-        "  set VIDEO_GEN_LOCAL_ENABLED=true\n"
-        "  pip install diffusers transformers accelerate torch pillow requests\n"
-        "Use a GPU with the VRAM profile listed on the selected tool."
+        "Run local open-source video models one of two ways:\n"
+        "  A) Warm inference gateway (recommended; unifies all 4 models on one\n"
+        "     server, no torch/diffusers needed in OpenMontage):\n"
+        "       set VIDEO_INFER_ENDPOINT=http://<gpu-host>:8000\n"
+        "       (gateway must implement the contract in ADR 0002 §5)\n"
+        "  B) In-process diffusers (cold-loads the model each call):\n"
+        "       set VIDEO_GEN_LOCAL_ENABLED=true\n"
+        "       pip install diffusers transformers accelerate torch pillow requests\n"
+        "Either way, use a GPU with the VRAM profile listed on the selected tool."
     )
 
 
@@ -248,6 +262,24 @@ def generate_local_video(
     default_variant: str,
     inputs: dict[str, Any],
 ) -> ToolResult:
+    # Route to a warm inference gateway if one is configured (ADR 0002). This
+    # avoids the per-call cold model load below and unifies all four models on
+    # one server. Falls through to in-process diffusers when unset.
+    from tools.video.video_infer_client import (
+        generate_remote_video,
+        video_infer_endpoint,
+    )
+
+    endpoint = video_infer_endpoint(inputs)
+    if endpoint:
+        return generate_remote_video(
+            endpoint=endpoint,
+            tool_name=tool_name,
+            variants=variants,
+            default_variant=default_variant,
+            inputs=inputs,
+        )
+
     import torch
     from diffusers.utils import export_to_video
 
