@@ -1,0 +1,225 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1501.82425 1455.2" width="1501.82425" height="1455.2" style="--bg:#ffffff;--fg:#1f2328;--line:#d1d9e0;--accent:#0969da;--muted:#59636e;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<g class="subgraph" data-id="OM" data-label="OpenMontage — orchestration (runs no LLM itself)">
+  <rect x="100.86025000000001" y="40" width="839.846" height="589.3000000000001" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="100.86025000000001" y="40" width="839.846" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="112.86025000000001" y="54" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">OpenMontage — orchestration (runs no LLM itself)</text>
+</g>
+<g class="subgraph" data-id="GW" data-label="Video Inference Gateway — REAL, GPU (H200)">
+  <rect x="40" y="757.6" width="265.12799999999993" height="402.30000000000007" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="40" y="757.6" width="265.12799999999993" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="52" y="771.6" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Video Inference Gateway — REAL, GPU (H200)</text>
+</g>
+<g class="subgraph" data-id="KK" data-label="Full Kakeya Inference Engine — LLM token engine">
+  <rect x="333.12799999999993" y="757.6" width="1128.69625" height="657.6" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="333.12799999999993" y="757.6" width="1128.69625" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="345.12799999999993" y="771.6" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Full Kakeya Inference Engine — LLM token engine</text>
+</g>
+<polyline class="edge" data-from="VIC" data-to="API" data-style="thick" data-arrow-start="false" data-arrow-end="true" data-label="REAL today: POST → real mp4" points="399.11125,613.3000000000001 399.11125,671.3000000000001 172.56399999999996,671.3000000000001 172.56399999999996,801.6" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="KTOOL" data-to="SHIM" data-style="thick" data-arrow-start="false" data-arrow-end="true" data-label="REAL today: text in/out (single-session)" points="795.9635833333334,345.62500000000006 795.9635833333332,671.3000000000001 878.8070833333331,671.3000000000001 878.8070833333331,739.6 795.9635833333332,739.6 795.9635833333332,801.6" fill="none" stroke="var(--_line)" stroke-width="2" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="KTOOL" data-to="GRPC" data-style="dotted" data-arrow-start="false" data-arrow-end="true" data-label="Phase 2b (planned): full throughput path" points="855.8889166666668,345.62500000000006 855.8889166666668,659.3000000000001 1176.2437499999999,659.3000000000001 1176.2437499999999,1073.5" fill="none" stroke="var(--_line)" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="AGENT" data-to="VSEL" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="582.1605500000001,137.8 582.1605500000001,161.8 399.11125,161.8 399.11125,185.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="AGENT" data-to="LSEL" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="582.1605500000001,137.8 582.1605500000001,161.8 825.92625,161.8 825.92625,185.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="VSEL" data-to="WAN" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="399.11125,239.60000000000002 399.11125,265.71250000000003 169.69825,265.71250000000003 169.69825,291.82500000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="VSEL" data-to="HUN" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="399.11125,239.60000000000002 399.11125,265.71250000000003 317.45325,265.71250000000003 317.45325,291.82500000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="VSEL" data-to="COG" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="399.11125,239.60000000000002 399.11125,265.71250000000003 480.76925,265.71250000000003 480.76925,291.82500000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="VSEL" data-to="LTX" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="399.11125,239.60000000000002 399.11125,265.71250000000003 642.6032499999999,265.71250000000003 642.6032499999999,291.82500000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="WAN" data-to="SEAM" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="169.69825,328.725 169.69825,359.0625 399.11125,359.0625 399.11125,389.40000000000003" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="HUN" data-to="SEAM" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="317.45325,328.725 317.45325,359.0625 399.11125,359.0625 399.11125,389.40000000000003" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="COG" data-to="SEAM" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="480.76925,328.725 480.76925,359.0625 399.11125,359.0625 399.11125,389.40000000000003" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="LTX" data-to="SEAM" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="642.6032499999999,328.725 642.6032499999999,359.0625 399.11125,359.0625 399.11125,389.40000000000003" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="SEAM" data-to="VIC" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="VIDEO_INFER_ENDPOINT set" points="399.11125,443.20000000000005 399.11125,559.5" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="LSEL" data-to="KTOOL" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="825.92625,239.60000000000002 825.9262500000002,291.82500000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="API" data-to="POOL" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="172.56399999999996,855.4000000000001 172.56399999999996,903.4000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="POOL" data-to="DIFF" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="172.56399999999996,957.2 172.56399999999996,1005.2" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="DIFF" data-to="VAE" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="172.56399999999996,1059 172.56399999999996,1107" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="GRPC" data-to="COORD" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="1176.2437499999999,1127.3000000000002 1176.2437499999999,1139.3000000000002 1085.4691666666665,1139.3000000000002 1085.4691666666665,1175.3000000000002" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="SHIM" data-to="VER" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="prefill → generate (no spec-decode)" points="795.9635833333332,855.4000000000001 795.9635833333332,935.7 761.7862499999999,935.7 761.7862499999999,971.7" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="COORD" data-to="DRAFT" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="propose" points="1045.1325,1229.1000000000001 1045.1325,1309.4 819.8663333333332,1309.4 819.8663333333332,1345.4" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="DRAFT" data-to="VER" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="draft tokens" points="782.5175833333333,1345.4 782.5175833333333,1309.4 746.0465833333333,1309.4 746.0465833333333,1037.5 748.6155833333332,1037.5 748.6155833333332,1025.5" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="VER" data-to="COORD" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="verify / accept" points="788.1275833333332,1025.5 788.1275833333332,1037.5 841.0792499999999,1037.5 841.0792499999999,1139.3000000000002 1004.7958333333332,1139.3000000000002 1004.7958333333332,1175.3000000000002" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="KV" data-to="VER" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="resident K/V" points="620.6603333333333,1175.3000000000002 620.6603333333333,1139.3000000000002 702.1845833333332,1139.3000000000002 702.1845833333332,1037.5 709.1035833333333,1037.5 709.1035833333333,1025.5" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="FTHETA" data-to="KV" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="restore evicted K/V" points="514.7850833333332,1025.5 514.7850833333332,1139.3000000000002 524.8443333333332,1139.3000000000002 524.8443333333332,1175.3000000000002" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="VER" data-to="KV" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="669.5915833333332,1025.5 669.5915833333332,1037.5 578.8143333333333,1037.5 578.8143333333333,1139.3000000000002 572.7523333333332,1139.3000000000002 572.7523333333332,1175.3000000000002" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="BK" data-to="VER" data-style="dotted" data-arrow-start="false" data-arrow-end="true" data-label="hosts weights" points="508.4986666666666,855.4000000000001 508.4986666666666,867.4000000000001 608.5839166666666,867.4000000000001 608.5839166666666,935.7 695.9329166666665,935.7 695.9329166666665,971.7" fill="none" stroke="var(--_line)" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="BK" data-to="DRAFT" data-style="dotted" data-arrow-start="false" data-arrow-end="true" data-label="hosts weights" points="428.8133333333333,855.4000000000001 428.8133333333333,867.4000000000001 416.07708333333323,867.4000000000001 416.07708333333323,1321.4 745.1688333333332,1321.4 745.1688333333332,1345.4" fill="none" stroke="var(--_line)" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arrowhead)" />
+<g class="edge-label" data-from="VIC" data-to="API" data-label="REAL today: POST → real mp4">
+  <rect x="94.06399999999998" y="678.3000000000001" width="156.052" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="172.08999999999997" y="693.45" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">REAL today: POST → real mp4</text>
+</g>
+<g class="edge-label" data-from="KTOOL" data-to="SHIM" data-label="REAL today: text in/out (single-session)">
+  <rect x="778.8070833333331" y="678.3000000000001" width="199.414" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="878.5140833333331" y="693.45" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">REAL today: text in/out (single-session)</text>
+</g>
+<g class="edge-label" data-from="KTOOL" data-to="GRPC" data-label="Phase 2b (planned): full throughput path">
+  <rect x="1075.7437499999999" y="678.3000000000001" width="200.00799999999998" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="1175.7477499999998" y="693.45" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">Phase 2b (planned): full throughput path</text>
+</g>
+<g class="edge-label" data-from="SEAM" data-to="VIC" data-label="VIDEO_INFER_ENDPOINT set">
+  <rect x="319.11125" y="486.20000000000005" width="159.61599999999999" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="398.91925" y="501.35" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">VIDEO_INFER_ENDPOINT set</text>
+</g>
+<g class="edge-label" data-from="SHIM" data-to="VER" data-label="prefill → generate (no spec-decode)">
+  <rect x="705.9635833333332" y="898.4000000000001" width="179.812" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="795.8695833333333" y="913.5500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">prefill → generate (no spec-decode)</text>
+</g>
+<g class="edge-label" data-from="COORD" data-to="DRAFT" data-label="propose">
+  <rect x="1015.6324999999999" y="1272.1" width="58.042" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="1044.6535" y="1287.25" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">propose</text>
+</g>
+<g class="edge-label" data-from="DRAFT" data-to="VER" data-label="draft tokens">
+  <rect x="709.5465833333333" y="1187.05" width="72.89200000000001" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="745.9925833333333" y="1202.2" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">draft tokens</text>
+</g>
+<g class="edge-label" data-from="VER" data-to="COORD" data-label="verify / accept">
+  <rect x="799.0792499999999" y="1085.25" width="83.584" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="840.8712499999999" y="1100.4" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">verify / accept</text>
+</g>
+<g class="edge-label" data-from="KV" data-to="VER" data-label="resident K/V">
+  <rect x="664.1845833333332" y="1085.25" width="75.862" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="702.1155833333332" y="1100.4" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">resident K/V</text>
+</g>
+<g class="edge-label" data-from="FTHETA" data-to="KV" data-label="restore evicted K/V">
+  <rect x="460.28508333333315" y="1085.25" width="108.532" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="514.5510833333332" y="1100.4" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">restore evicted K/V</text>
+</g>
+<g class="edge-label" data-from="BK" data-to="VER" data-label="hosts weights">
+  <rect x="567.5839166666665" y="898.4000000000001" width="81.20800000000001" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="608.1879166666665" y="913.5500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">hosts weights</text>
+</g>
+<g class="edge-label" data-from="BK" data-to="DRAFT" data-label="hosts weights">
+  <rect x="375.0770833333333" y="1085.25" width="81.20800000000001" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="415.6810833333333" y="1100.4" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">hosts weights</text>
+</g>
+<g class="node" data-id="AGENT" data-label="Host Agent
+creative intelligence" data-shape="rectangle">
+  <rect x="502.27605" y="84" width="159.769" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="582.1605500000001" y="110.9" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="582.1605500000001" dy="-3.9000000000000012">Host Agent</tspan><tspan x="582.1605500000001" dy="16.900000000000002">creative intelligence</tspan></text>
+</g>
+<g class="node" data-id="VSEL" data-label="video_selector
+capability=video_generation" data-shape="rectangle">
+  <rect x="294.40325" y="185.8" width="209.41599999999994" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="399.11125" y="212.70000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="399.11125" dy="-3.9000000000000012">video_selector</tspan><tspan x="399.11125" dy="16.900000000000002">capability=video_generation</tspan></text>
+</g>
+<g class="node" data-id="LSEL" data-label="llm_selector
+capability=text_generation" data-shape="rectangle">
+  <rect x="727.14625" y="185.8" width="197.55999999999997" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="825.92625" y="212.70000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="825.92625" dy="-3.9000000000000012">llm_selector</tspan><tspan x="825.92625" dy="16.900000000000002">capability=text_generation</tspan></text>
+</g>
+<g class="node" data-id="WAN" data-label="wan_video" data-shape="rectangle">
+  <rect x="116.86025000000001" y="291.82500000000005" width="105.676" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="169.69825" y="310.27500000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">wan_video</text>
+</g>
+<g class="node" data-id="HUN" data-label="hunyuan_video" data-shape="rectangle">
+  <rect x="250.53625" y="291.82500000000005" width="133.834" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="317.45325" y="310.27500000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">hunyuan_video</text>
+</g>
+<g class="node" data-id="COG" data-label="cogvideo_video" data-shape="rectangle">
+  <rect x="412.37025" y="291.82500000000005" width="136.798" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="480.76925" y="310.27500000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">cogvideo_video</text>
+</g>
+<g class="node" data-id="LTX" data-label="ltx_video_local" data-shape="rectangle">
+  <rect x="577.16825" y="291.82500000000005" width="130.87" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="642.6032499999999" y="310.27500000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">ltx_video_local</text>
+</g>
+<g class="node" data-id="SEAM" data-label="_shared.generate_local_video()
+routing seam" data-shape="rectangle">
+  <rect x="283.28825" y="389.40000000000003" width="231.64599999999996" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="399.11125" y="416.3" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="399.11125" dy="-3.9000000000000012">_shared.generate_local_video()</tspan><tspan x="399.11125" dy="16.900000000000002">routing seam</tspan></text>
+</g>
+<g class="node" data-id="VIC" data-label="video_infer_client
+HTTP, ADR 0002 §5" data-shape="rectangle">
+  <rect x="319.96774999999997" y="559.5" width="158.287" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="399.11125" y="586.4" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="399.11125" dy="-3.9000000000000012">video_infer_client</tspan><tspan x="399.11125" dy="16.900000000000002">HTTP, ADR 0002 §5</tspan></text>
+</g>
+<g class="node" data-id="KTOOL" data-label="kakeya_llm tool
+generate / batch / health" data-shape="rectangle">
+  <rect x="736.0382500000001" y="291.82500000000005" width="179.77599999999998" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="825.9262500000001" y="318.725" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="825.9262500000001" dy="-3.9000000000000012">kakeya_llm tool</tspan><tspan x="825.9262500000001" dy="16.900000000000002">generate / batch / health</tspan></text>
+</g>
+<g class="node" data-id="API" data-label="FastAPI
+/healthz · /v1/video/generations" data-shape="rectangle">
+  <rect x="59.705" y="801.6" width="225.71799999999996" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="172.56399999999996" y="828.5" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="172.56399999999996" dy="-3.9000000000000012">FastAPI</tspan><tspan x="172.56399999999996" dy="16.900000000000002">/healthz · /v1/video/generations</tspan></text>
+</g>
+<g class="node" data-id="POOL" data-label="warm model pool
+keyed by HF model id" data-shape="rectangle">
+  <rect x="90.08599999999997" y="903.4000000000001" width="164.95600000000002" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="172.56399999999996" y="930.3000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="172.56399999999996" dy="-3.9000000000000012">warm model pool</tspan><tspan x="172.56399999999996" dy="16.900000000000002">keyed by HF model id</tspan></text>
+</g>
+<g class="node" data-id="DIFF" data-label="diffusers DiT pipelines
+WAN / Hunyuan / CogVideo / LTX" data-shape="rectangle">
+  <rect x="56" y="1005.2" width="233.12799999999996" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="172.56399999999996" y="1032.1000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="172.56399999999996" dy="-3.9000000000000012">diffusers DiT pipelines</tspan><tspan x="172.56399999999996" dy="16.900000000000002">WAN / Hunyuan / CogVideo / LTX</tspan></text>
+</g>
+<g class="node" data-id="VAE" data-label="VAE decode → mp4 (h264)" data-shape="rectangle">
+  <rect x="77.48899999999999" y="1107" width="190.14999999999998" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="172.56399999999996" y="1125.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">VAE decode → mp4 (h264)</text>
+</g>
+<g class="node" data-id="GRPC" data-label="gRPC RuntimeService
+CreateSession · AppendTokens · Generate stream · GetSessionInfo · CloseSession" data-shape="rectangle">
+  <rect x="906.6632499999998" y="1073.5" width="539.161" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1176.2437499999999" y="1100.4" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="1176.2437499999999" dy="-3.9000000000000012">gRPC RuntimeService</tspan><tspan x="1176.2437499999999" dy="16.900000000000002">CreateSession · AppendTokens · Generate stream · GetSessionInfo · CloseSession</tspan></text>
+</g>
+<g class="node" data-id="SHIM" data-label="HTTP shim /v1/chat/completions
+deprecated · single-session · AR only" data-shape="rectangle">
+  <rect x="663.0975833333332" y="801.6" width="265.73199999999997" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="795.9635833333332" y="828.5" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="795.9635833333332" dy="-3.9000000000000012">HTTP shim /v1/chat/completions</tspan><tspan x="795.9635833333332" dy="16.900000000000002">deprecated · single-session · AR only</tspan></text>
+</g>
+<g class="node" data-id="COORD" data-label="Append / Generation Coordinators
++ SessionStore" data-shape="rectangle">
+  <rect x="924.1224999999998" y="1175.3000000000002" width="242.01999999999998" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1045.1324999999997" y="1202.2000000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="1045.1324999999997" dy="-3.9000000000000012">Append / Generation Coordinators</tspan><tspan x="1045.1324999999997" dy="16.900000000000002">+ SessionStore</tspan></text>
+</g>
+<g class="node" data-id="DRAFT" data-label="Drafter / Proposer
+DFlash dLLM" data-shape="rectangle">
+  <rect x="707.8200833333333" y="1345.4" width="149.39499999999998" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="782.5175833333333" y="1372.3000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="782.5175833333333" dy="-3.9000000000000012">Drafter / Proposer</tspan><tspan x="782.5175833333333" dy="16.900000000000002">DFlash dLLM</tspan></text>
+</g>
+<g class="node" data-id="VER" data-label="Verifier (AR)
+Gemma-4 26B-A4B / Qwen3" data-shape="rectangle">
+  <rect x="630.0795833333332" y="971.7" width="197.55999999999997" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="728.8595833333331" y="998.6" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="728.8595833333331" dy="-3.9000000000000012">Verifier (AR)</tspan><tspan x="728.8595833333331" dy="16.900000000000002">Gemma-4 26B-A4B / Qwen3</tspan></text>
+</g>
+<g class="node" data-id="FTHETA" data-label="f_θ projection
+trained K/V restoration" data-shape="rectangle">
+  <rect x="427.49058333333323" y="971.7" width="174.589" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="514.7850833333332" y="998.6" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="514.7850833333332" dy="-3.9000000000000012">f_θ projection</tspan><tspan x="514.7850833333332" dy="16.900000000000002">trained K/V restoration</tspan></text>
+</g>
+<g class="node" data-id="KV" data-label="bounded sink+window KV
++ restoration (S5)" data-shape="rectangle">
+  <rect x="476.93633333333327" y="1175.3000000000002" width="191.63199999999995" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="572.7523333333332" y="1202.2000000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="572.7523333333332" dy="-3.9000000000000012">bounded sink+window KV</tspan><tspan x="572.7523333333332" dy="16.900000000000002">+ restoration (S5)</tspan></text>
+</g>
+<g class="node" data-id="BK" data-label="Backends
+CUDA batched 8.45× · MLX serial" data-shape="rectangle">
+  <rect x="349.12799999999993" y="801.6" width="239.05599999999998" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="468.65599999999995" y="828.5" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="468.65599999999995" dy="-3.9000000000000012">Backends</tspan><tspan x="468.65599999999995" dy="16.900000000000002">CUDA batched 8.45× · MLX serial</tspan></text>
+</g>
+</svg>

@@ -97,6 +97,86 @@ OpenMontage already has the *correct pattern* for the fix: `generate_ltx_modal_v
 routes to a standalone HTTP inference server (`MODAL_LTX2_ENDPOINT_URL`) instead of
 loading in-process. We generalize that to all four local models.
 
+## 3a. Integrated architecture diagram
+
+Rendered: [`kakeya-openmontage-architecture.png`](kakeya-openmontage-architecture.png)
+(source: [`kakeya-openmontage-architecture.mmd`](kakeya-openmontage-architecture.mmd)).
+The full Kakeya engine is shown with its real internals — **gRPC RuntimeService**,
+**Verifier** (AR), **Drafter/Proposer** (DFlash dLLM), **f_θ** projection, and the
+bounded sink+window KV + restoration — alongside the (real-today) single-session
+HTTP shim and the planned gRPC throughput path.
+
+```mermaid
+flowchart TB
+  subgraph OM["OpenMontage — orchestration (runs no LLM itself)"]
+    AGENT["Host Agent<br/>creative intelligence"]
+    VSEL["video_selector<br/>capability=video_generation"]
+    LSEL["llm_selector<br/>capability=text_generation"]
+    WAN["wan_video"]
+    HUN["hunyuan_video"]
+    COG["cogvideo_video"]
+    LTX["ltx_video_local"]
+    SEAM["_shared.generate_local_video()<br/>routing seam"]
+    VIC["video_infer_client<br/>HTTP, ADR 0002 §5"]
+    KTOOL["kakeya_llm tool<br/>generate / batch / health"]
+    AGENT --> VSEL
+    AGENT --> LSEL
+    VSEL --> WAN
+    VSEL --> HUN
+    VSEL --> COG
+    VSEL --> LTX
+    WAN --> SEAM
+    HUN --> SEAM
+    COG --> SEAM
+    LTX --> SEAM
+    SEAM -->|"VIDEO_INFER_ENDPOINT set"| VIC
+    LSEL --> KTOOL
+  end
+
+  subgraph GW["Video Inference Gateway — REAL, GPU (H200)"]
+    API["FastAPI<br/>/healthz · /v1/video/generations"]
+    POOL["warm model pool<br/>keyed by HF model id"]
+    DIFF["diffusers DiT pipelines<br/>WAN / Hunyuan / CogVideo / LTX"]
+    VAE["VAE decode → mp4 (h264)"]
+    API --> POOL
+    POOL --> DIFF
+    DIFF --> VAE
+  end
+
+  subgraph KK["Full Kakeya Inference Engine — LLM token engine"]
+    GRPC["gRPC RuntimeService<br/>CreateSession · AppendTokens · Generate stream · GetSessionInfo · CloseSession"]
+    SHIM["HTTP shim /v1/chat/completions<br/>deprecated · single-session · AR only"]
+    COORD["Append / Generation Coordinators<br/>+ SessionStore"]
+    DRAFT["Drafter / Proposer<br/>DFlash dLLM"]
+    VER["Verifier (AR)<br/>Gemma-4 26B-A4B / Qwen3"]
+    FTHETA["f_θ projection<br/>trained K/V restoration"]
+    KV["bounded sink+window KV<br/>+ restoration (S5)"]
+    BK["Backends<br/>CUDA batched 8.45× · MLX serial"]
+    GRPC --> COORD
+    SHIM -->|"prefill → generate (no spec-decode)"| VER
+    COORD -->|"propose"| DRAFT
+    DRAFT -->|"draft tokens"| VER
+    VER -->|"verify / accept"| COORD
+    KV -->|"resident K/V"| VER
+    FTHETA -->|"restore evicted K/V"| KV
+    VER --> KV
+    BK -.->|"hosts weights"| VER
+    BK -.->|"hosts weights"| DRAFT
+  end
+
+  VIC ==>|"REAL today: POST → real mp4"| API
+  KTOOL ==>|"REAL today: text in/out (single-session)"| SHIM
+  KTOOL -.->|"Phase 2b (planned): full throughput path"| GRPC
+```
+
+**How to read it.** OpenMontage stays a thin orchestrator. Video requests fan out
+through the four tools → one routing seam → the **real** GPU gateway (warm diffusers
+→ real mp4). Text requests go through `kakeya_llm`; **today** they hit Kakeya's
+single-session HTTP shim (which wraps only the Verifier — pure AR, no spec-decode,
+hence the 500-on-concurrency finding I8). The **full** engine's throughput path
+(Drafter + Verifier + f_θ + bounded-KV restoration over the gRPC RuntimeService) is
+Phase 2b — drawn here to show where it slots in.
+
 ## 4. Decision
 
 Introduce a **video inference gateway** seam: an optional, standalone, warm
