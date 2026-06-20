@@ -314,6 +314,37 @@ Definitive quantitative advantage pending high-frequency content + a cleaner met
 
 ---
 
+## Iteration 10 — high-frequency stress + MultiDiffusion wired into coarse-to-fine (capstone)
+
+**Trigger:** "run the high-frequency stress test and/or wire MultiDiffusion into the
+coarse-to-fine vid2vid refine driven by the distilled proposer."
+
+**Built:** `coarse_to_fine_multidiffusion_wan.py` — full ADR 0004 pipeline on high-frequency
+content (dense ornate bookshelf): CausVid proposer (6-step) → upscale → SDEdit (strength
+0.6) → tiled full-WAN refine, **independent-merge vs MultiDiffusion**, with a
+boundary-isolating seam metric (peak ÷ window-median).
+
+**Result (real H200):** both seamless — seam_v_excess 0.96 (both), seam_h_excess 1.05 vs
+1.09; **latent overlap-disagreement only 0.073**; the two decoded frames are near-identical
+and sharp (high-freq detail preserved). **MultiDiffusion gave no measurable benefit here.**
+
+**Capstone finding (I19):** in the coarse-to-fine regime the **shared low-res framework
+anchors the tile overlaps** → independent tiles barely diverge → **independent parallel
+refinement is already seamless** at moderate strength; per-step latent fusion is
+unnecessary. Opposite of Tier 1b (from-scratch tiling diverges). ⇒ the f_θ role is largely
+provided by the framework conditioning; **independent tiles parallelize trivially across
+GPUs** (no cross-tile sync) — clean for the distributed goal. MultiDiffusion is the
+safety-net for from-scratch / high-strength refine. Bug fixed: `get_timesteps` needs the
+scheduler's timesteps (not None).
+
+**Synthesis of ADR 0004:** distilled proposer (5.7×) + framework-anchored **independent**
+parallel tile refinement (seamless, trivially distributable) is the efficient design;
+MultiDiffusion is the consistency safety-net for the unanchored/high-drift regime. Next: a
+**strength sweep** to find the crossover where independent tiling breaks and MultiDiffusion
+becomes necessary; and **multi-GPU** independent-tile parallelism (needs ≥2 GPUs).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

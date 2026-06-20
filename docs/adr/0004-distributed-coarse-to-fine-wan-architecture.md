@@ -301,6 +301,47 @@ separates tile boundaries from real scene edges** — the next refinement. Bugs 
 the way: missing `torch.no_grad()` (OOM at 140 GB), `transformer_2` kwarg (I15), np frames
 (I16), seam-edge mislocation (I17).
 
+### Capstone — full pipeline on high-frequency content: the framework IS the consistency anchor
+
+Wired latent MultiDiffusion into the **full coarse-to-fine vid2vid refine** driven by the
+distilled proposer, on **high-frequency** content (a dense bookshelf with sharp ornate
+spines), with a **boundary-isolating** seam metric (peak discontinuity at the tile line ÷
+median over a ±48 px window — isolates true seams from scene edges). Script:
+[`coarse_to_fine_multidiffusion_wan.py`](../../services/video_infer_gateway/experiments/coarse_to_fine_multidiffusion_wan.py);
+metrics: [`tier01_evidence/coarse_to_fine_multidiffusion_metrics.json`](tier01_evidence/coarse_to_fine_multidiffusion_metrics.json).
+
+Pipeline: CausVid proposer (6-step, 4.0 s) → upscale → SDEdit (strength 0.6) → tiled full-WAN
+refine, **independent-merge vs MultiDiffusion**.
+
+| Condition | seam_v_excess | seam_h_excess | latent overlap-disagreement |
+|---|---|---|---|
+| independent merge | 0.96 | 1.05 | **0.073** |
+| MultiDiffusion | 0.96 | 1.09 | — |
+
+**Both are seamless** (excess ≈ 1.0 = boundary looks like ordinary texture) and the two
+decoded frames are **near-identical and sharp** (high-frequency detail preserved):
+`tier01_evidence/c2f_multidiffusion_mid.png` ≈ `c2f_independent_mid.png`.
+
+**Key finding (capstone):** in the coarse-to-fine regime, the **shared low-res framework
+anchors the tile overlaps** — independent tiles barely diverge (disagreement 0.073), so
+**independent parallel refinement is already seamless and MultiDiffusion adds no measurable
+benefit at moderate strength.** This is the opposite of Tier 1b (from-scratch t2v tiling),
+where tiles diverged for lack of an anchor.
+
+**Architecture implications (favorable):**
+- The f_θ/merge-consistency role is **largely provided by the framework conditioning
+  itself** at moderate refine strength — no expensive per-step latent fusion required.
+- Therefore **independent tiles parallelize trivially across GPUs** (no per-step cross-tile
+  sync) — precisely what makes the distributed/multi-GPU goal clean and scalable.
+- **Latent MultiDiffusion is the fallback** for from-scratch generation or high refine
+  strength (where tiles drift off the framework). A strength sweep would map the crossover
+  point where independent tiling breaks and MultiDiffusion becomes necessary (next).
+
+This is the synthesis of ADR 0004: distilled proposer (5.7×) + framework-anchored
+**independent** parallel tile refinement (seamless, trivially distributable) is the
+efficient design; MultiDiffusion is the consistency safety-net for the unanchored/high-drift
+regime.
+
 ## References
 
 1. VEnhancer — https://arxiv.org/abs/2407.07667 ; https://github.com/Vchitect/VEnhancer

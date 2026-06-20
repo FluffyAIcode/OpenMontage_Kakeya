@@ -1,0 +1,25 @@
+{
+  "model": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+  "content": "high_frequency_bookshelf",
+  "canvas_px": [
+    768,
+    1472
+  ],
+  "strength": 0.6,
+  "steps": 16,
+  "frames": 25,
+  "t_proposer_s": 3.95,
+  "overlap_disagreement_independent": 0.0734,
+  "independent": {
+    "seam_v_excess": 0.964,
+    "seam_h_excess": 1.05,
+    "t_s": 7.13
+  },
+  "multidiffusion": {
+    "seam_v_excess": 0.958,
+    "seam_h_excess": 1.086,
+    "t_s": 7.08
+  },
+  "seam_v_excess_reduction_pct": 0.6,
+  "seam_h_excess_reduction_pct": -3.4
+}
