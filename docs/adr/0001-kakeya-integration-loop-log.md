@@ -552,6 +552,39 @@ confirmation, the orchestrator produces the real Mac-proposer + vast-refiner vid
 
 ---
 
+## Iteration 20 — REAL Mac(MLX)+vast(CUDA) distributed video produced ✅
+
+**Result:** the full cross-region distributed WAN pipeline ran end-to-end and produced a real,
+seamless **1472×768 × 25-frame h264** video (`docs/adr/tier01_evidence/dwan_mac_vast.mp4`,
+mid-frame `dwan_mac_vast_mid.png`) — a red fox in a snowy forest, no visible tile seams.
+
+**Measured (live, two regions):**
+- **Proposer = Mac mini Apple-Silicon MLX** (`mlx-video`): low-res framework `480×256`, returned
+  `(16, 256, 480, 3)` in **98.4 s** (includes per-call model load: umt5-xxl T5 + transformer + VAE).
+- **Refine = vast H200 CUDA** (diffusers WAN vid2vid): 4 tiles, per-tile 6.7–23.1 s,
+  **refine wall 24.5 s** (concurrent dispatch, serialized by the worker GPU lock).
+- **Transport:** orchestrator on vast → `localhost:50051` (CUDA, refine-only) + `localhost:55051`
+  → `socks5_forward.py` → SOCKS5(tailscaled) → Mac `:50051`, all gRPC server-streaming.
+
+**Two bugs fixed to get here (both real, surfaced not masked):**
+1. **MLX OOM** (Metal "Insufficient Memory") at full `832×480×25` VAE decode → made the proposer
+   low-res by design (`--fw-width/--fw-height/--fw-frames`, temporal+spatial resample to canvas)
+   + aggressive VAE tiling (`MLX_TILING`). Fox proposer at `480×256×13` fits comfortably.
+2. **Idle stream drop** (`Stream removed (Socket closed)`): the MLX worker emits 5% then goes
+   silent during the long T5 load; the idle HTTP/2 stream was cut over the SOCKS5/tailnet tunnel.
+   Added a worker **heartbeat** (keepalive Progress every 5 s) + gRPC keepalive on both ends.
+
+**What this proves:** WAN runs on Apple Silicon via MLX (ADR 0008), the gRPC worker contract
+(ADR 0010) federates heterogeneous GPUs (MLX + CUDA) across regions, and the coarse-to-fine
+proposer/refiner split (ADR 0004) yields a seamless beyond-native-resolution result from two
+modest, geographically-separated machines. The Mac is genuinely "another GPU".
+
+**Honest limits:** cross-region latency + per-call MLX model reload make the MLX proposer the
+wall-clock bottleneck (~98 s vs ~25 s refine); this is a *capability/feasibility* win, not a
+throughput win. For raw speed, co-locate CUDA workers (ADR 0006 §5).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

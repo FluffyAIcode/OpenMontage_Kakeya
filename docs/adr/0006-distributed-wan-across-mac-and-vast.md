@@ -89,7 +89,19 @@ The gRPC plane (ADR 0010) was wired and proven across **two regions**:
 - **vast CUDA restarted refine-only** (`--ops refine`); cluster = Mac(framework) + vast(refine).
 - A live `GenerateFramework` to the Mac surfaced a clean module-path bug
   (`mlx_video.wan_2` → must be `mlx_video.models.wan_2`), fixed in `grpc_worker.py` +
-  `mac_setup.sh`. Final pixels require the owner to restart the Mac worker on the fixed code.
+  `mac_setup.sh`.
+
+**Real distributed video produced (Iteration 20).** End-to-end run across both regions:
+- Proposer on the **Mac mini MLX GPU** (`mlx-video`): `480×256` framework → `(16,256,480)` in
+  **98.4 s**; orchestrator temporally+spatially resampled it to the `1472×768`×25 canvas.
+- Refine of 4 tiles on the **vast H200 CUDA** worker: **24.5 s** wall.
+- Output: a seamless **1472×768 × 25-frame** fox-in-snow clip
+  (`docs/adr/tier01_evidence/dwan_mac_vast.mp4`, mid-frame below) — no visible tile seams.
+
+![Mac(MLX)+vast(CUDA) distributed result](tier01_evidence/dwan_mac_vast_mid.png)
+
+Two real bugs were fixed to reach this: MLX VAE-decode OOM (→ low-res proposer + aggressive VAE
+tiling) and an idle-stream drop during the silent T5 load (→ worker heartbeat + gRPC keepalive).
 
 ## 5. Boundary (do not regress)
 
