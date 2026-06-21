@@ -499,6 +499,24 @@ CUDA real-video on GPU). MLX worker stays owner-run on the Mac (no Mac access).
 
 ---
 
+## Iteration 18 — complete Mac mini MLX gRPC worker script
+
+**Trigger:** "give the complete script to run on the Mac mini."
+
+**Delivered:** `services/distributed_wan/mac_setup.sh` — turnkey: preflight (arm64/macOS≥14/
+py≥3.11) → venv + mlx/mlx-video/grpc deps → clone repo + protoc stubs → convert
+Wan2.1-T2V-1.3B→MLX → Tailscale hint → run `grpc_worker.py --backend mlx`. Made `MlxBackend`
+**config-driven** (env: `MLX_T2V_MODULE`, `MLX_PASS_DIMS`, `MLX_OPS`, `MLX_V2V_FLAG`,
+`MLX_RELATIVE_SPEED`) so it adapts to the installed mlx-video without code edits and **fails
+loudly** (no silent garbage) if flags differ. bash -n + py_compile clean.
+
+**Honest:** mlx-video = T2V/I2V (usually no vid2vid) → Mac advertises **framework/T2V** by
+default; refines stay on CUDA unless the owner's mlx-video has vid2vid (`MLX_OPS+=refine`,
+`MLX_V2V_FLAG`). Not runnable here (no Mac); owner runs it, then `WAN_WORKERS` includes the
+Mac and the orchestrator speed-weights it.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

@@ -156,27 +156,35 @@ class MlxBackend:
     def __init__(self, model_dir: str, ops: list[str]):
         self.model_dir = model_dir
         self.ops = ops or ["framework"]
+        # Version-adaptable knobs (no code edits needed):
+        self.module = os.environ.get("MLX_T2V_MODULE", "mlx_video.wan_2.generate")
+        self.pass_dims = os.environ.get("MLX_PASS_DIMS", "0").lower() in ("1", "true", "yes")
+        self.v2v_flag = os.environ.get("MLX_V2V_FLAG", "")  # e.g. "--video" if your build has vid2vid
 
     def health(self):
         return pb.HealthReply(device="mlx", backend="mlx-video", model=self.model_dir,
                               ops=self.ops, ready=True, note="Apple Silicon (MLX)",
                               relative_speed=float(os.environ.get("MLX_RELATIVE_SPEED", "0.12")))
 
-    def _run_cli(self, prompt, num_frames, steps, q, extra=None):
+    def _run(self, prompt, seed, num_frames, steps, q, extra=None):
         out = Path(tempfile.mkstemp(suffix=".mp4")[1])
-        cmd = ["python", "-m", "mlx_video.wan_2.generate", "--model-dir", self.model_dir,
-               "--prompt", prompt, "--output-path", str(out)]
-        # These flags exist on current mlx-video; adjust per your version if needed.
-        if num_frames:
-            cmd += ["--num-frames", str(num_frames)]
-        if steps:
-            cmd += ["--steps", str(steps)]
+        # Documented mlx-video flags (README): --model-dir/--prompt/--output-path/--seed.
+        cmd = ["python", "-m", self.module, "--model-dir", self.model_dir,
+               "--prompt", prompt, "--output-path", str(out), "--seed", str(seed)]
+        # num-frames/steps may be config-driven in some mlx-video versions; opt-in.
+        if self.pass_dims:
+            if num_frames:
+                cmd += ["--num-frames", str(num_frames)]
+            if steps:
+                cmd += ["--steps", str(steps)]
         if extra:
             cmd += extra
         q.put_nowait(("p", 0.05))
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        import re
+        tail = []
         for line in proc.stdout:  # best-effort progress from mlx-video stdout ("k/N")
-            import re
+            tail.append(line)
             m = re.search(r"(\d+)\s*/\s*(\d+)", line)
             if m:
                 try:
@@ -185,25 +193,29 @@ class MlxBackend:
                     pass
         proc.wait()
         if proc.returncode != 0 or not out.exists():
-            raise RuntimeError(f"mlx-video CLI failed (rc={proc.returncode})")
+            raise RuntimeError(f"mlx-video failed (rc={proc.returncode}). Last output:\n"
+                               + "".join(tail[-15:]) + "\nAdjust MLX_T2V_MODULE/MLX_PASS_DIMS to your mlx-video.")
         data = out.read_bytes()
         out.unlink(missing_ok=True)
-        return mp4_to_frames(data)
+        return _to_uint8(mp4_to_frames(data))
 
     def framework(self, req, q):
-        if "framework" not in self.ops and "t2v" not in self.ops:
-            raise RuntimeError("mlx worker not configured for framework/t2v")
-        return _to_uint8(self._run_cli(req.prompt, req.num_frames or 25, req.steps or 6, q))
+        if not ({"framework", "t2v"} & set(self.ops)):
+            raise RuntimeError("this mlx worker is not configured for framework/t2v")
+        return self._run(req.prompt, req.seed or 42, req.num_frames or 25, req.steps or 6, q)
 
     def refine(self, req, q):
+        # mlx-video typically has NO vid2vid; the Mac usually serves framework/T2V only and
+        # refines run on a CUDA worker. Enable refine ONLY if your mlx-video has vid2vid.
         if "refine" not in self.ops:
-            raise RuntimeError("mlx worker advertises no 'refine' op (set --mlx-ops to include it "
-                               "only if your mlx-video supports vid2vid)")
-        # write the input clip and pass it as a video conditioning input
+            raise RuntimeError("this mlx worker advertises no 'refine' op (mlx-video usually lacks "
+                               "vid2vid). Route refines to a CUDA worker; use the Mac for framework/T2V.")
+        if not self.v2v_flag:
+            raise RuntimeError("set MLX_V2V_FLAG (e.g. --video) to your mlx-video's vid2vid input flag")
         inp = Path(tempfile.mkstemp(suffix=".mp4")[1]); inp.write_bytes(req.mp4)
         try:
-            return _to_uint8(self._run_cli(req.prompt, req.num_frames or 25, req.steps or 16, q,
-                                           extra=["--video", str(inp), "--strength", str(req.strength or 0.6)]))
+            return self._run(req.prompt, req.seed or 7, req.num_frames or 25, req.steps or 16, q,
+                             extra=[self.v2v_flag, str(inp), "--strength", str(req.strength or 0.6)])
         finally:
             inp.unlink(missing_ok=True)
 
