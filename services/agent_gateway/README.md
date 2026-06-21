@@ -1,4 +1,4 @@
-# OpenMontage Agent Gateway — public video service (kekaye.ai)
+# OpenMontage Agent Gateway — public video service (kakeya.ai)
 
 The public front door that lets anyone use OpenMontage's agent video service over a domain.
 It is a **thin transport + job/session layer** — no creative or orchestration logic lives here
@@ -8,7 +8,7 @@ see `services/distributed_wan/`), streams progress, and serves the resulting `.m
 
 ```
   Browser / API client
-        │  HTTPS  https://kekaye.ai
+        │  HTTPS  https://kakeya.ai
         ▼
   Caddy (auto-TLS)  ──►  agent_gateway (FastAPI :8088)
                                 │ subprocess
@@ -37,12 +37,12 @@ see `services/distributed_wan/`), streams progress, and serves the resulting `.m
 ### Example
 
 ```bash
-curl -s -X POST https://kekaye.ai/v1/videos \
+curl -s -X POST https://kakeya.ai/v1/videos \
   -H 'Content-Type: application/json' -H 'X-API-Key: $KEY' \
   -d '{"prompt":"a red fox walking through a snowy forest, cinematic"}'
 # {"job_id":"ab12…","status":"queued","poll":"/v1/jobs/ab12…"}
-curl -s https://kekaye.ai/v1/jobs/ab12…            # poll until status=done
-curl -s https://kekaye.ai/v1/jobs/ab12…/video -o out.mp4
+curl -s https://kakeya.ai/v1/jobs/ab12…            # poll until status=done
+curl -s https://kakeya.ai/v1/jobs/ab12…/video -o out.mp4
 ```
 
 ## Run
@@ -64,25 +64,28 @@ Env:
 | `ORCHESTRATOR_PATH` | path to `grpc_orchestrator.py` if the gateway lives apart from `distributed_wan` |
 | `AGENT_RUNTIME_CMD` | command that drives the full OpenMontage pipeline for `mode=agent` |
 
-## Exposing it at kekaye.ai
+## Exposing it at kakeya.ai
 
 ### Option A — your own host + Caddy (production, custom domain)
 
-1. **DNS:** point `kekaye.ai` (A/AAAA) at the gateway host's public IP. (Cloudflare/registrar.)
+1. **DNS:** point `kakeya.ai` (A/AAAA) at the gateway host's public IP. (Cloudflare/registrar.)
 2. Open ports **80** and **443** to the host.
 3. Run the gateway on `127.0.0.1:8088` (systemd unit in `deploy/agent-gateway.service`).
-4. Run Caddy with `deploy/Caddyfile` — it fetches a Let's Encrypt cert for `kekaye.ai` automatically.
+4. Run Caddy with `deploy/Caddyfile` — it fetches a Let's Encrypt cert for `kakeya.ai` automatically.
 
 ```bash
 sudo cp services/agent_gateway/deploy/agent-gateway.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now agent-gateway
-sudo caddy run --config services/agent_gateway/deploy/Caddyfile     # SITE_HOST=kekaye.ai by default
+sudo caddy run --config services/agent_gateway/deploy/Caddyfile     # SITE_HOST=kakeya.ai by default
 ```
+
+> **On Cloudflare?** `kakeya.ai` is managed by Cloudflare and the GPU box is behind NAT — use a
+> **Cloudflare Tunnel**. Full command set: [`deploy/cloudflare.md`](deploy/cloudflare.md).
 
 ### Option B — Tailscale Funnel (instant public HTTPS, no DNS/cert work)
 
 Good for a rented GPU box behind NAT (no public IP). Gives a public `https://<host>.<tailnet>.ts.net`
-URL with a valid cert. To later move to `kekaye.ai`, CNAME it to the funnel host or switch to Option A.
+URL with a valid cert. To later move to `kakeya.ai`, CNAME it to the funnel host or switch to Option A.
 
 ```bash
 tailscale funnel --bg 8088        # exposes the local gateway publicly over HTTPS

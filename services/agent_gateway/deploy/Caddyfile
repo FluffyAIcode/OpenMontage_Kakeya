@@ -1,14 +1,14 @@
-# Caddy reverse proxy for the OpenMontage Agent Gateway at kekaye.ai.
-# Caddy obtains + renews a Let's Encrypt TLS cert automatically once kekaye.ai's
+# Caddy reverse proxy for the OpenMontage Agent Gateway at kakeya.ai.
+# Caddy obtains + renews a Let's Encrypt TLS cert automatically once kakeya.ai's
 # A/AAAA record points at this host and ports 80/443 are reachable.
 #
 #   sudo caddy run --config services/agent_gateway/deploy/Caddyfile
 #   # or: sudo cp Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
 #
-# Override the public hostname with an env var if not kekaye.ai:
+# Override the public hostname with an env var if not kakeya.ai:
 #   SITE_HOST=video.example.com caddy run --config Caddyfile
 
-{$SITE_HOST:kekaye.ai} {
+{$SITE_HOST:kakeya.ai} {
 	encode zstd gzip
 
 	# Large request/response bodies (mp4) + long render times.
@@ -29,6 +29,6 @@
 }
 
 # Optional: redirect the apex/www as needed.
-www.{$SITE_HOST:kekaye.ai} {
-	redir https://{$SITE_HOST:kekaye.ai}{uri} permanent
+www.{$SITE_HOST:kakeya.ai} {
+	redir https://{$SITE_HOST:kakeya.ai}{uri} permanent
 }
