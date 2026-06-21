@@ -585,6 +585,30 @@ throughput win. For raw speed, co-locate CUDA workers (ADR 0006 §5).
 
 ---
 
+## Iteration 21 — public agent video service via a domain (ADR 0011, kekaye.ai)
+
+**Trigger:** "continue integrating OpenMontage so the agent video service is usable directly via
+the kekaye.ai domain."
+
+**Built:** `services/agent_gateway/` — a FastAPI **front door** (REST + minimal web UI) that turns
+a request into a video by driving the validated distributed-WAN cluster, and the domain/TLS
+deployment config (`deploy/Caddyfile`, `deploy/agent-gateway.service`, Tailscale-Funnel path).
+
+**Architecture honored:** the gateway is a **transport + job layer only** — no creative/pipeline
+logic in Python (Rule Zero). `mode="video"` shells out to `grpc_orchestrator.py` (capability call);
+`mode="agent"` enqueues for an external agent runtime (`AGENT_RUNTIME_CMD`) and never fakes creative
+decisions. Endpoints: `/`, `/healthz`, `/v1/capabilities`, `POST /v1/videos`, `GET /v1/jobs/{id}`,
+`GET /v1/jobs/{id}/video`. Optional `X-API-Key` auth.
+
+**Tested:** 6 offline tests (`tests/tools/test_agent_gateway.py`) using a fake orchestrator that
+emits the real progress/`ORCH_DONE` protocol — full submit→run→poll→download lifecycle, auth gate,
+honest agent-mode-without-runtime, 404s. All pass.
+
+**Owner-dependent (cannot be done by the cloud agent):** pointing `kekaye.ai` DNS at a host. The
+Tailscale-Funnel `*.ts.net` URL is the zero-DNS fallback for an immediate public demo.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

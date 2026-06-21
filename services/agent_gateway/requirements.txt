@@ -1,0 +1,6 @@
+# OpenMontage Agent Gateway — public front door for the agent video service.
+# The gateway itself is light; it shells out to services/distributed_wan/grpc_orchestrator.py
+# (which brings grpcio + imageio). Keep this list minimal.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
