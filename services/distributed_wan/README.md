@@ -1,4 +1,14 @@
-# Distributed WAN inference — Mac mini (text) + vast CUDA (video), across regions
+# Distributed WAN inference — Mac mini + vast CUDA, across regions
+
+> **Transport: gRPC** (`proto/video_worker.proto`, `grpc_worker.py`, `grpc_orchestrator.py`)
+> is the product contract — typed schema, **server-streaming progress**, deadlines,
+> capability negotiation, speed-weighted routing (ADR 0010). The earlier HTTP
+> `worker.py`/`orchestrator.py` remain as the simpler reference (ADR 0009). The Mac runs an
+> **MLX** worker (`mac_setup.sh`, wrapping `mlx-video`, ADR 0008) as "another GPU"; vast runs
+> the **CUDA** worker. Run `python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/video_worker.proto`
+> to (re)generate stubs.
+
+
 
 Lets a **cloud agent** drive a WAN video production that uses **both** a local **Mac mini**
 GPU and one-or-more **vast** GPUs that sit in **different regions** — *correctly*, within the

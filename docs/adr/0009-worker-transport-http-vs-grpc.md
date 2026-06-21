@@ -1,6 +1,9 @@
 # ADR 0009 — Distributed WAN worker transport: HTTP vs gRPC
 
-- **Status:** Decided (HTTP for the worker/tool plane; gRPC reserved for a LAN data plane)
+- **Status:** **Superseded for the product by ADR 0010** (gRPC chosen). The analysis below
+  holds for its scope (throwaway validation); the product directive — "usable product, not a
+  toy" — flips the weights toward gRPC's typed contract + streaming progress + capability
+  negotiation. See ADR 0010.
 - **Date:** 2026-06-21
 - **Deciders:** OpenMontage maintainers
 - **Question:** Why is the distributed WAN worker contract (ADR 0006/0008) **HTTP/JSON**

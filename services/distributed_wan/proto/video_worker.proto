@@ -1,0 +1,59 @@
+// Distributed WAN worker contract (gRPC). Product-grade transport (ADR 0010):
+// typed schema, server-streaming progress, deadlines/cancellation, capability
+// negotiation, binary mp4 payloads (no base64). One service implemented by BOTH
+// a CUDA (diffusers) worker and an MLX (mlx-video, Mac mini) worker; the
+// orchestrator routes by advertised capability + measured speed.
+syntax = "proto3";
+
+package distwan.v1;
+
+service VideoWorker {
+  // Capability negotiation + readiness (like Kakeya CapabilityService).
+  rpc Health (HealthRequest) returns (HealthReply);
+  // Distilled-proposer low-res framework. Server-streams Progress; final msg carries mp4.
+  rpc GenerateFramework (FrameworkRequest) returns (stream Progress);
+  // Full-model vid2vid refine of a framework-crop tile. Server-streams Progress.
+  rpc RefineTile (RefineRequest) returns (stream Progress);
+}
+
+message HealthRequest {}
+
+message HealthReply {
+  string device = 1;        // "cuda" | "mlx" | "cpu"
+  string backend = 2;       // "cuda-diffusers" | "mlx-video"
+  string model = 3;
+  repeated string ops = 4;  // advertised: "framework","refine","t2v","i2v"
+  bool ready = 5;
+  string note = 6;          // chip / vram / ram, etc.
+  float relative_speed = 7; // hint for speed-weighted tile assignment (1.0 = baseline)
+}
+
+message FrameworkRequest {
+  string prompt = 1;
+  string negative_prompt = 2;
+  int32 width = 3;
+  int32 height = 4;
+  int32 num_frames = 5;
+  int32 steps = 6;
+  int64 seed = 7;
+}
+
+message RefineRequest {
+  string prompt = 1;
+  string negative_prompt = 2;
+  bytes mp4 = 3;            // input clip (framework crop) — binary, no base64
+  int32 width = 4;
+  int32 height = 5;
+  int32 num_frames = 6;
+  int32 steps = 7;
+  float strength = 8;
+  int64 seed = 9;
+}
+
+message Progress {
+  float pct = 1;            // 0..1
+  string stage = 2;         // "load" | "denoise" | "decode" | "done"
+  bool done = 3;
+  bytes mp4 = 4;            // populated only on the final message (done=true)
+  float gen_seconds = 5;
+}

@@ -464,6 +464,24 @@ progress (SSE-over-HTTP covers progress without grpc deps).
 
 ---
 
+## Iteration 16 — gRPC worker contract (product decision, ADR 0010)
+
+**Trigger:** "usable product, not a toy → use gRPC; run mlx-video on the Mac as another GPU."
+
+**Built:** `proto/video_worker.proto` (+ stubs), `grpc_worker.py` (backends: **cuda** diffusers
+full ops, **mlx** wrapping mlx-video owner-run, **test** transport-only), `grpc_orchestrator.py`
+(capability + **speed-weighted** routing, **server-streaming progress**, concurrent refine,
+f_θ merge), `mac_setup.sh`. ADR 0010 supersedes ADR 0009's HTTP recommendation for the product.
+
+**Validated (gRPC transport, local, no GPU):** two test workers (speed 3.0/1.0) → capability
+negotiation; **exact 3:1 speed-weighted tile split** (cuda 3, mlx 1 of 4); per-tile streamed
+progress interleaved across concurrent workers; f_θ merge → 1472×768 mp4. ✓
+
+**Pending → done in iteration 17:** CUDA-over-gRPC real video (vast box was unreachable at
+decision time; came back on a new port). MLX worker stays owner-run (no Mac here).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
