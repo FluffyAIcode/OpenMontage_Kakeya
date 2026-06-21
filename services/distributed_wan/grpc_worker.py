@@ -169,6 +169,9 @@ class MlxBackend:
         # Optional CausVid/Self-Forcing LoRA for a faithful few-step proposer: "path,strength"
         self.lora = os.environ.get("MLX_LORA", "").strip()
         self.v2v_flag = os.environ.get("MLX_V2V_FLAG", "")  # e.g. "--image" only if your build has vid2vid
+        # VAE tiling cuts decode-time Metal memory on unified-memory Macs (OOM is usually the
+        # VAE decode before writeout). "aggressive" is safest for small Mac minis.
+        self.tiling = os.environ.get("MLX_TILING", "aggressive")
 
     def health(self):
         return pb.HealthReply(device="mlx", backend="mlx-video", model=self.model_dir,
@@ -193,6 +196,8 @@ class MlxBackend:
         if self.lora:
             path, _, strength = self.lora.partition(",")
             cmd += ["--lora", path.strip(), (strength.strip() or "1.0")]
+        if self.tiling and self.tiling != "auto":
+            cmd += ["--tiling", self.tiling]
         if extra:
             cmd += extra
         q.put_nowait(("p", 0.05))

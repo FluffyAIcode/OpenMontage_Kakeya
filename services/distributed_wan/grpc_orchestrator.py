@@ -103,6 +103,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompt", required=True)
     ap.add_argument("--frames", type=int, default=25)
+    # Proposer (framework) is LOW-res by design — keeps a memory-bounded Mac/MLX worker from
+    # OOMing. It is temporally + spatially resampled up to the canvas before tiled refine.
+    ap.add_argument("--fw-width", type=int, default=480)
+    ap.add_argument("--fw-height", type=int, default=256)
+    ap.add_argument("--fw-frames", type=int, default=13)  # must be 4n+1; worker snaps if not
     ap.add_argument("--proposer-steps", type=int, default=6)
     ap.add_argument("--refine-steps", type=int, default=16)
     ap.add_argument("--strength", type=float, default=0.6)
@@ -132,18 +137,20 @@ def main():
         except Exception as exc:
             print(f"[orch] Mac text plane unavailable ({exc}); base prompt (not faked)", flush=True)
 
-    # 2) framework on the FASTEST framework-capable worker
+    # 2) LOW-res framework on the FASTEST framework-capable worker (the MLX proposer)
     fw = max(fw_workers, key=lambda w: w.speed)
-    print(f"[orch] framework on {fw.addr} ({fw.backend})...", flush=True)
+    print(f"[orch] framework on {fw.addr} ({fw.backend}) @ {args.fw_width}x{args.fw_height}x{args.fw_frames}...", flush=True)
     mp4, gs = _consume(fw.stub.GenerateFramework(pb.FrameworkRequest(
-        prompt=args.prompt, width=WT, height=HT, num_frames=args.frames, steps=args.proposer_steps,
-        seed=args.seed)), "framework")
+        prompt=args.prompt, width=args.fw_width, height=args.fw_height,
+        num_frames=args.fw_frames, steps=args.proposer_steps, seed=args.seed)), "framework")
     framework = _mp4_to_frames(mp4)
     print(f"[orch] framework {framework.shape} in {gs:.1f}s", flush=True)
 
-    # 3) upscale -> canvas
-    canvas = np.stack([np.asarray(Image.fromarray(framework[i]).resize((CW, CH), Image.BICUBIC))
-                       for i in range(framework.shape[0])])
+    # 3) temporal resample proposer -> args.frames, then spatial upscale -> canvas
+    F = framework.shape[0]
+    t_idx = np.round(np.linspace(0, F - 1, args.frames)).astype(int) if F != args.frames else np.arange(args.frames)
+    canvas = np.stack([np.asarray(Image.fromarray(framework[t_idx[i]]).resize((CW, CH), Image.BICUBIC))
+                       for i in range(args.frames)])
 
     # 4) SPEED-WEIGHTED tile assignment across refine workers
     loads = {id(w): 0 for w in refine_workers}

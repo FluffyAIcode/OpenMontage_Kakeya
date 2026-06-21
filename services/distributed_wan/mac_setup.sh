@@ -109,9 +109,13 @@ EOF
 
 # ---- 5. run the MLX gRPC worker ----
 if [ "$STEP" = "all" ] || [ "$STEP" = "run" ]; then
-  say "5. starting MLX gRPC worker on 0.0.0.0:${PORT}  (ops=${MLX_OPS})"
+  say "5. starting MLX gRPC worker on 0.0.0.0:${PORT}  (ops=${MLX_OPS}, tiling=${MLX_TILING:-aggressive})"
   [ -d "$MODEL_DIR" ] || die "MODEL_DIR '$MODEL_DIR' missing — run conversion first (STEP=setup)"
-  exec env MLX_RELATIVE_SPEED="$MLX_RELATIVE_SPEED" \
+  # Unified-memory Macs OOM on the VAE decode at full res; the orchestrator sends a LOW-res
+  # proposer (e.g. 480x256x13) and we use aggressive VAE tiling. Don't force HF offline mode
+  # (it blocked T5 loading in testing); online mode still uses local caches.
+  exec env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
+       MLX_RELATIVE_SPEED="$MLX_RELATIVE_SPEED" MLX_TILING="${MLX_TILING:-aggressive}" \
        python grpc_worker.py --backend mlx --host 0.0.0.0 --port "$PORT" \
            --mlx-model-dir "$MODEL_DIR" --mlx-ops "$MLX_OPS"
 fi
