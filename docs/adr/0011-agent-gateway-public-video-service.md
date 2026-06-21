@@ -99,6 +99,18 @@ gateway changes. Turnkey: `services/agent_gateway/deploy/mac_all_in_one.sh` +
 > shut down, the cloud agent loses its (vast-relayed) path to the Mac, so the all-on-Mac runbook
 > is the path the owner runs directly.
 
+### Two Mac minis over Thunderbolt (worker POOL)
+
+Two Thunderbolt-bridged Macs = two MLX workers. `mlx-video` has **no distributed/tensor-parallel
+support and no vid2vid**, so a single generation can't be sharded across both Macs (the combined
+~536 G is **not** one pool for one generation) and the high-res refine pipeline still needs CUDA.
+The real win is **throughput**: the gateway's **POOL mode** (`AGENT_GATEWAY_WORKER_POOL=1`) gives
+each job its own Mac (DIRECT no-refine), running N jobs in parallel = N× throughput, with natural
+backpressure when all Macs are busy. Head Mac = gateway + `cloudflared` + worker A; Mac B = worker
+B reached over the (LAN-fast) Thunderbolt bridge. Runbook:
+`services/agent_gateway/deploy/two-mac-thunderbolt.md`. Adding a CUDA refiner later re-enables the
+refined pipeline with no code change.
+
 ## 5. Honest limits
 
 - A capable autonomous `mode="agent"` needs a strong reasoning LLM in the loop; the local Kakeya

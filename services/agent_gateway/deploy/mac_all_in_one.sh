@@ -26,6 +26,10 @@ PORT="${PORT:-8088}"
 WORKER_PORT="${WORKER_PORT:-50051}"
 API_KEY="${API_KEY:-}"
 MLX_TILING="${MLX_TILING:-aggressive}"
+# Two-Mac Thunderbolt cluster: PEERS = comma-list of the OTHER Mac(s)' worker addresses on the
+# Thunderbolt-bridge network, e.g. PEERS="192.168.5.2:50051". Each Mac runs its own MLX worker;
+# the head Mac (this one) runs the gateway in worker-POOL mode -> one job per Mac, N× throughput.
+PEERS="${PEERS:-}"
 
 say() { printf "\n\033[1;36m== %s ==\033[0m\n" "$*"; }
 die() { printf "\n\033[1;31mERROR: %s\033[0m\n" "$*" >&2; exit 1; }
@@ -57,9 +61,14 @@ else
   say "MLX worker already listening on :$WORKER_PORT"
 fi
 
-# 2) agent gateway (no-refine DIRECT mode is auto-selected: only the Mac worker exists)
-say "starting agent_gateway on 127.0.0.1:$PORT"
-env WAN_WORKERS="127.0.0.1:$WORKER_PORT" \
+# 2) agent gateway. WAN_WORKERS = this Mac's worker + any PEERS (other Macs over Thunderbolt).
+#    With >1 worker, enable POOL mode: each job runs DIRECT (no-refine) on ONE Mac, N in parallel.
+WORKERS="127.0.0.1:$WORKER_PORT"
+POOL="0"
+if [ -n "$PEERS" ]; then WORKERS="$WORKERS,$PEERS"; POOL="1"; fi
+say "starting agent_gateway on 127.0.0.1:$PORT  (workers=$WORKERS, pool=$POOL)"
+env WAN_WORKERS="$WORKERS" \
+    AGENT_GATEWAY_WORKER_POOL="$POOL" \
     ORCHESTRATOR_PATH="$ORCH" \
     AGENT_GATEWAY_API_KEY="$API_KEY" \
     AGENT_GATEWAY_JOBS_DIR="$HOME/.openmontage-jobs" \

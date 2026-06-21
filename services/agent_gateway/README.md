@@ -85,6 +85,10 @@ sudo caddy run --config services/agent_gateway/deploy/Caddyfile     # SITE_HOST=
 > **Mac mini is the only GPU?** Run worker + gateway + `cloudflared` all on the Mac (self-contained,
 > auto DIRECT no-refine mode): [`deploy/mac-all-in-one.md`](deploy/mac-all-in-one.md) +
 > `deploy/mac_all_in_one.sh`.
+>
+> **Two Thunderbolt-bridged Mac minis?** Run a worker on each; the head Mac's gateway uses
+> **POOL mode** (`AGENT_GATEWAY_WORKER_POOL=1`) for one-job-per-Mac parallelism (2× throughput):
+> [`deploy/two-mac-thunderbolt.md`](deploy/two-mac-thunderbolt.md).
 
 ### Option B — Tailscale Funnel (instant public HTTPS, no DNS/cert work)
 

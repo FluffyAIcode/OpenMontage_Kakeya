@@ -638,6 +638,31 @@ with no gateway change. Gateway tests (6) still pass; orchestrator compiles.
 
 ---
 
+## Iteration 23 — two Mac minis over Thunderbolt: gateway worker-POOL (2× throughput)
+
+**Trigger:** owner bridged two Mac minis over Thunderbolt (~536 G combined) and asked to
+re-architect the video agent for it.
+
+**Grounded finding (checked the package source):** `mlx-video` has **no** distributed/tensor-
+parallel support (no `mlx.distributed`/`mlx.launch`/collectives) and **no vid2vid**. So:
+- a single WAN generation can't be sharded across the two Macs — the combined memory is **not**
+  one pool for one generation (each gen is bounded by one Mac);
+- the high-res proposer→tiled-refine pipeline still needs a CUDA refiner.
+
+**Built — the honest win is throughput:** gateway **POOL mode** (`AGENT_GATEWAY_WORKER_POOL=1`):
+each `WAN_WORKERS` entry is an independent GPU; a `queue` hands each job one free Mac (DIRECT
+no-refine), N jobs run in parallel = N× throughput, with backpressure when all Macs are busy.
+- `server.py`: pool queue + per-worker dispatch + `--no-refine`; `/healthz` reports
+  `pool_mode`/`parallel`.
+- `mac_all_in_one.sh`: `PEERS="<macB-bridge-ip>:50051"` → head Mac runs gateway in pool mode.
+- `two-mac-thunderbolt.md`: bridge IPs, per-Mac worker, head gateway + cloudflared, verify 2×.
+- 7 gateway tests pass (added a two-Mac pool test).
+
+**Honest:** still owner-run (no cloud-agent path to the Macs after vast shutdown). Output remains
+Mac-grade DIRECT T2V; adding a CUDA refiner re-enables high-res refine with no code change.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

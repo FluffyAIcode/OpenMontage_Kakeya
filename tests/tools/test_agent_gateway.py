@@ -31,6 +31,7 @@ def client(tmp_path, monkeypatch):
         "for a in ['--prompt','--out']: ap.add_argument(a)\n"
         "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed']:\n"
         "    ap.add_argument(a)\n"
+        "ap.add_argument('--no-refine',action='store_true')\n"
         "x=ap.parse_args()\n"
         "print('[orch]   framework:    5%',flush=True)\n"
         "print('[orch]   framework:  100%',flush=True)\n"
@@ -111,3 +112,38 @@ def test_api_key_enforced(tmp_path, monkeypatch):
 def test_job_404(client):
     c, _ = client
     assert c.get("/v1/jobs/nope").status_code == 404
+
+
+def test_pool_mode_two_macs(tmp_path, monkeypatch):
+    """Two Thunderbolt-bridged Macs -> pool mode: 2 jobs run + complete in parallel."""
+    fake = tmp_path / "fake_orch.py"
+    fake.write_text(
+        "import argparse,json,pathlib,time\n"
+        "ap=argparse.ArgumentParser()\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed']: ap.add_argument(a)\n"
+        "ap.add_argument('--no-refine',action='store_true')\n"
+        "x=ap.parse_args()\n"
+        "assert x.no_refine, 'pool mode must pass --no-refine'\n"
+        "print('[orch]   generate:  100%',flush=True); time.sleep(0.5)\n"
+        "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'POOLMP4')\n"
+        "print('ORCH_DONE '+json.dumps({'out':x.out,'mode':'direct'}),flush=True)\n"
+    )
+    monkeypatch.setenv("WAN_WORKERS", "10.0.0.1:50051,10.0.0.2:50051")
+    monkeypatch.setenv("AGENT_GATEWAY_WORKER_POOL", "1")
+    monkeypatch.setenv("AGENT_GATEWAY_JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.delenv("AGENT_GATEWAY_API_KEY", raising=False)
+    sys.path.insert(0, str(REPO / "services" / "agent_gateway"))
+    import server
+    importlib.reload(server)
+    server.ORCH = fake
+    assert server.POOL_MODE is True
+    c = TestClient(server.app)
+    h = c.get("/healthz").json()
+    assert h["pool_mode"] is True and h["parallel"] == 2
+    j1 = c.post("/v1/videos", json={"prompt": "fox one"}).json()["job_id"]
+    j2 = c.post("/v1/videos", json={"prompt": "fox two"}).json()["job_id"]
+    out = {}
+    for jid in (j1, j2):
+        out[jid] = _wait(c, jid)
+    assert all(o["status"] == "done" for o in out.values()), out
+    assert c.get(f"/v1/jobs/{j1}/video").content == b"POOLMP4"

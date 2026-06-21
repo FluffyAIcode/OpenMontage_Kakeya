@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -54,7 +55,13 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 API_KEY = os.environ.get("AGENT_GATEWAY_API_KEY", "").strip()
 WAN_WORKERS = os.environ.get("WAN_WORKERS", "").strip()
+WORKER_LIST = [a.strip() for a in WAN_WORKERS.split(",") if a.strip()]
 AGENT_RUNTIME_CMD = os.environ.get("AGENT_RUNTIME_CMD", "").strip()
+# Worker-pool mode: treat each WAN_WORKERS entry as an INDEPENDENT GPU (e.g. two Thunderbolt-
+# bridged Mac minis). Each job runs on ONE worker (DIRECT no-refine), N jobs in parallel = N×
+# throughput. Off => classic single-orchestrator call using ALL workers (proposer+CUDA-refiner).
+POOL_MODE = (os.environ.get("AGENT_GATEWAY_WORKER_POOL", "0").lower() in ("1", "true", "yes")
+             and len(WORKER_LIST) > 1)
 MAX_LOG = 200
 
 _PCT = re.compile(r"(\w[\w ()@,]*?):\s+(\d+)%")
@@ -85,8 +92,12 @@ class Job:
 
 JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
-# GPU backend is serialized; one job at a time keeps the cluster honest.
-_POOL = ThreadPoolExecutor(max_workers=1)
+# In pool mode, run one job per worker concurrently; otherwise serialize (the single cluster
+# is one render at a time). A queue hands out free worker addresses to jobs.
+_POOL = ThreadPoolExecutor(max_workers=(len(WORKER_LIST) if POOL_MODE else 1))
+_WORKER_Q: queue.Queue = queue.Queue()
+for _a in (WORKER_LIST if POOL_MODE else []):
+    _WORKER_Q.put(_a)
 
 app = FastAPI(title="OpenMontage Agent Gateway", version="1.0.0")
 
@@ -123,6 +134,9 @@ def _run_video_job(job: Job):
     if not ORCH.exists():
         job.status, job.error = "error", f"orchestrator not found: {ORCH}"
         return
+    # In pool mode acquire ONE worker (blocks until a Mac is free); else use all workers.
+    worker_addr = _WORKER_Q.get() if POOL_MODE else None
+    job_workers = worker_addr if POOL_MODE else WAN_WORKERS
     job.status, job.stage = "running", "framework"
     out_path = JOBS_DIR / job.id / "video.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,28 +146,34 @@ def _run_video_job(job: Job):
            "--fw-frames", str(p["fw_frames"]), "--proposer-steps", str(p["proposer_steps"]),
            "--refine-steps", str(p["refine_steps"]), "--seed", str(p["seed"]),
            "--out", str(out_path)]
-    env = {**os.environ, "WAN_WORKERS": WAN_WORKERS}
-    _log(job, f"$ grpc_orchestrator --prompt {job.prompt!r} (workers={WAN_WORKERS})")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    for line in proc.stdout:
-        line = line.rstrip()
-        if not line:
-            continue
-        _log(job, line)
-        m = _DONE.match(line)
-        if m:
-            try:
-                info = json.loads(m.group(1))
-                job.out = info.get("out", str(out_path))
-            except json.JSONDecodeError:
-                job.out = str(out_path)
-            continue
-        mp = _PCT.search(line)
-        if mp:
-            label, pct = mp.group(1).strip(), int(mp.group(2))
-            job.stage = "refine" if label.startswith("tile") else "framework"
-            job.pct = pct / 100.0
-    proc.wait()
+    if POOL_MODE:
+        cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
+    env = {**os.environ, "WAN_WORKERS": job_workers}
+    _log(job, f"$ grpc_orchestrator --prompt {job.prompt!r} (worker={job_workers})")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            _log(job, line)
+            m = _DONE.match(line)
+            if m:
+                try:
+                    info = json.loads(m.group(1))
+                    job.out = info.get("out", str(out_path))
+                except json.JSONDecodeError:
+                    job.out = str(out_path)
+                continue
+            mp = _PCT.search(line)
+            if mp:
+                label, pct = mp.group(1).strip(), int(mp.group(2))
+                job.stage = "refine" if label.startswith("tile") else "framework"
+                job.pct = pct / 100.0
+        proc.wait()
+    finally:
+        if POOL_MODE and worker_addr is not None:
+            _WORKER_Q.put(worker_addr)  # release the Mac for the next job
     if proc.returncode != 0 or not (job.out and Path(job.out).exists()):
         job.status = "error"
         job.error = job.error or f"orchestrator exited rc={proc.returncode}; see log"
@@ -198,7 +218,8 @@ def _dispatch(job: Job):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "workers": WAN_WORKERS or None, "orchestrator": ORCH.exists(),
+    return {"status": "ok", "workers": WORKER_LIST or None, "pool_mode": POOL_MODE,
+            "parallel": (len(WORKER_LIST) if POOL_MODE else 1), "orchestrator": ORCH.exists(),
             "agent_runtime": bool(AGENT_RUNTIME_CMD), "jobs": len(JOBS)}
 
 
@@ -319,7 +340,8 @@ def main():
     ap.add_argument("--port", type=int, default=8088)
     args = ap.parse_args()
     import uvicorn
-    print(f"[agent_gateway] http://{args.host}:{args.port}  workers={WAN_WORKERS or '(unset)'}  "
+    print(f"[agent_gateway] http://{args.host}:{args.port}  workers={WORKER_LIST or '(unset)'}  "
+          f"pool={POOL_MODE} parallel={len(WORKER_LIST) if POOL_MODE else 1}  "
           f"auth={'on' if API_KEY else 'off'}", flush=True)
     uvicorn.run(app, host=args.host, port=args.port)
 
