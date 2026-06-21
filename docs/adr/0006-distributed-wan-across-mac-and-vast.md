@@ -77,10 +77,27 @@ the network transport, and seamless tiled merge in the distributed setting.
 - `services/distributed_wan/README.md` — cross-region deployment (Tailscale for the Mac,
   worker URLs/tunnels for vast).
 
+## 3b. Live cross-region verification (Iteration 19)
+
+The gRPC plane (ADR 0010) was wired and proven across **two regions**:
+
+- The vast container has **no `/dev/net/tun`**, so tailscaled runs userspace-only (SOCKS5).
+  `services/distributed_wan/socks5_forward.py` bridges `localhost:55051` → SOCKS5 → `mac:50051`
+  so the orchestrator dials the Mac as a plaintext gRPC endpoint (no socat/ncat needed).
+- **Mac Health (real):** `backend=mlx-video device=mlx ops=['framework'] speed=0.12`, ~214 ms
+  tailnet RTT — a genuine MLX WAN worker, not a stub.
+- **vast CUDA restarted refine-only** (`--ops refine`); cluster = Mac(framework) + vast(refine).
+- A live `GenerateFramework` to the Mac surfaced a clean module-path bug
+  (`mlx_video.wan_2` → must be `mlx_video.models.wan_2`), fixed in `grpc_worker.py` +
+  `mac_setup.sh`. Final pixels require the owner to restart the Mac worker on the fixed code.
+
 ## 5. Boundary (do not regress)
 
-- **WAN = CUDA only.** The Mac never runs WAN (B1). For true multi-GPU WAN speedup, add
-  CUDA workers (same region/datacenter ideally).
+- **WAN runs on BOTH CUDA and Apple-Silicon/MLX.** Superseding the earlier B1: ADR 0008 and
+  the Iteration-19 live Health confirm a real `mlx-video` WAN worker on the Mac. The Mac is the
+  low-res **framework/T2V proposer**; the CUDA box does **vid2vid refine** (mlx-video has no
+  vid2vid). For raw multi-GPU WAN throughput, co-located CUDA workers still win.
 - **Cross-region = coarse traffic only** (B2): prompts + mp4. Never route per-step tensors
   or spec-decode drafts over WAN (matches ADR 0003/0005).
-- **No fake:** the Mac text plane is skipped-not-faked when unreachable.
+- **No fake:** unreachable workers are skipped-not-faked; the Mac MLX failure was surfaced as a
+  real gRPC `INTERNAL`, never masked.

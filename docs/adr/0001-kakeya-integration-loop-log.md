@@ -517,6 +517,41 @@ Mac and the orchestrator speed-weights it.
 
 ---
 
+## Iteration 19 — live cross-region Mac(MLX)+vast(CUDA) gRPC cluster wired; MLX module-path bug fixed
+
+**Trigger:** owner reported the Mac mini MLX gRPC worker is up and reachable on the tailnet
+(`TCP *:50051 LISTEN`, `nc -vz 100.78.64.43 50051 succeeded`). Goal: actually run the
+distributed WAN job across both GPUs.
+
+**What worked (verified, not claimed):**
+- **Cross-region transport over a userspace-networking tailnet.** The vast H200 container has
+  **no `/dev/net/tun`**, so tailscaled runs in userspace mode (SOCKS5 on `:1055`); a normal
+  `connect()` to `100.x` does not route, and the box has neither `socat` nor `ncat`. Built
+  `services/distributed_wan/socks5_forward.py` (stdlib only): `127.0.0.1:55051` → SOCKS5(1055)
+  → `mac:50051`. gRPC then dials the local forward as plaintext h2c.
+- **Mac Health over gRPC** through the forward: `backend=mlx-video device=mlx ops=['framework']
+  speed=0.12` — a **real MLX worker** (not the test backend), ~214 ms tailnet RTT.
+- **Two-GPU cluster staged:** vast CUDA restarted **refine-only** (`--ops refine`,
+  `ops=['refine']`, warm) on `:50051`; Mac framework-only on `:55051`. Orchestrator routes
+  framework→Mac, the 4 refine tiles→vast — genuinely both GPUs.
+
+**Bug found + fixed (the real blocker):** a live `GenerateFramework` to the Mac streamed
+progress 0%→5% then surfaced a clean gRPC `INTERNAL`: `No module named 'mlx_video.wan_2'`.
+Checked the actual Blaizzy/mlx-video source: the entrypoints are
+`mlx_video.models.wan_2.generate` / `.convert` (not `mlx_video.wan_2.*`), with verified flags
+`--model-dir/--prompt/--output-path/--width/--height/--num-frames/--steps/--seed/--lora`
+(num-frames must be 4n+1). Fixed `MlxBackend` defaults + `mac_setup.sh`
+(download native `Wan-AI/Wan2.1-T2V-1.3B` checkpoint → `mlx_video.models.wan_2.convert
+--checkpoint-dir/--output-dir`). Added `--ops`/`WORKER_OPS` so a CUDA box can be refine-only.
+
+**Honest status:** the orchestrator → Mac → mlx-video path is wired and proven end-to-end at
+the transport/streaming layer; the final pixels require the **Mac worker to restart on the
+fixed code** (the running worker still has the old module path baked in) and a valid converted
+MLX model dir — both Mac-side actions the cloud agent cannot perform remotely. On restart +
+confirmation, the orchestrator produces the real Mac-proposer + vast-refiner video.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
