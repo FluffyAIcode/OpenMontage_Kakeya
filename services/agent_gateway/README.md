@@ -81,6 +81,10 @@ sudo caddy run --config services/agent_gateway/deploy/Caddyfile     # SITE_HOST=
 
 > **On Cloudflare?** `kakeya.ai` is managed by Cloudflare and the GPU box is behind NAT — use a
 > **Cloudflare Tunnel**. Full command set: [`deploy/cloudflare.md`](deploy/cloudflare.md).
+>
+> **Mac mini is the only GPU?** Run worker + gateway + `cloudflared` all on the Mac (self-contained,
+> auto DIRECT no-refine mode): [`deploy/mac-all-in-one.md`](deploy/mac-all-in-one.md) +
+> `deploy/mac_all_in_one.sh`.
 
 ### Option B — Tailscale Funnel (instant public HTTPS, no DNS/cert work)
 

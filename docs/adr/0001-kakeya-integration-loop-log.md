@@ -614,6 +614,30 @@ hung waiting on tailnet HTTPS provisioning — that's an admin toggle, not a cod
 
 ---
 
+## Iteration 22 — Mac-only pivot: DIRECT no-refine mode + all-on-Mac service (vast shut down)
+
+**Trigger:** owner shut down vast and asked to prioritize the Mac mini GPU for connectivity +
+OpenMontage integration testing.
+
+**Reality check:** with vast down, the cloud-agent VM lost its only path to the Mac (it relayed
+through vast's SOCKS5 forwarder; this VM has no TUN/tailnet of its own). So the durable answer is
+**all-on-Mac**: the Mac is both the GPU and the control host.
+
+**Built:**
+- `grpc_orchestrator.py` **DIRECT (no-refine) mode** — auto-enabled when no refine-capable worker
+  exists (Mac MLX is framework-only). One MLX T2V generation at fw dims, no tiled CUDA refine, so
+  the gateway still produces video with just the Mac. Explicit `--no-refine` too.
+- `deploy/mac_all_in_one.sh` + `deploy/mac-all-in-one.md` — turnkey: MLX worker + agent_gateway
+  (:8088) + cloudflared → kakeya.ai, all on the Mac over localhost. mac_setup.sh now also installs
+  fastapi/uvicorn.
+
+**Honest:** the cloud agent cannot shell into the Mac, and vast (its relay) is down, so this
+iteration is code + a runbook the owner runs on the Mac. Output in Mac-only mode is a low-res
+T2V clip (memory-bounded); adding a CUDA refine worker re-enables the high-res refined pipeline
+with no gateway change. Gateway tests (6) still pass; orchestrator compiles.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

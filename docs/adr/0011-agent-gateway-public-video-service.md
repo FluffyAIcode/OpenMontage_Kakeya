@@ -78,6 +78,27 @@ The gateway → distributed-WAN → mp4 path is real end-to-end. Public exposure
 or a `kekaye.ai` A-record + Caddy) is the only remaining owner step — Funnel/HTTPS must be enabled
 by the tailnet admin; external DNS is out of the cloud agent's control.
 
+## 4c. All-on-Mac topology (single-GPU, no vast)
+
+When the Mac mini is the **only GPU**, the gateway + `cloudflared` run on the Mac too — fully
+self-contained over `localhost`, no relay:
+
+```
+https://kakeya.ai ─► Cloudflare ──tunnel──► Mac mini: cloudflared + agent_gateway(:8088) + MLX worker(:50051)
+```
+
+Because the only worker is the Mac MLX (framework/T2V, no vid2vid), the orchestrator
+**auto-selects DIRECT (no-refine) mode**: one MLX T2V generation, no tiled CUDA refine — so the
+service still produces video with just the Mac. Adding a CUDA refine worker later
+(`WAN_WORKERS="127.0.0.1:50051,<cuda>:50051"`) upgrades to the high-res refined pipeline with zero
+gateway changes. Turnkey: `services/agent_gateway/deploy/mac_all_in_one.sh` +
+[`deploy/mac-all-in-one.md`](../../services/agent_gateway/deploy/mac-all-in-one.md).
+
+> Topology note: a cloud-agent VM can also be the control host (SSH-forward the worker ports +
+> `cloudflared`), but it's ephemeral; the Mac is the durable, owner-controlled host. With vast
+> shut down, the cloud agent loses its (vast-relayed) path to the Mac, so the all-on-Mac runbook
+> is the path the owner runs directly.
+
 ## 5. Honest limits
 
 - A capable autonomous `mode="agent"` needs a strong reasoning LLM in the loop; the local Kakeya
