@@ -61,6 +61,7 @@ Env:
 | `WAN_WORKERS` | gRPC worker addresses passed to the orchestrator (required for `mode=video`) |
 | `AGENT_GATEWAY_API_KEY` | if set, `POST /v1/videos` requires header `X-API-Key` |
 | `AGENT_GATEWAY_JOBS_DIR` | where job outputs are written (default `projects/_gateway_jobs`) |
+| `ORCHESTRATOR_PATH` | path to `grpc_orchestrator.py` if the gateway lives apart from `distributed_wan` |
 | `AGENT_RUNTIME_CMD` | command that drives the full OpenMontage pipeline for `mode=agent` |
 
 ## Exposing it at kekaye.ai

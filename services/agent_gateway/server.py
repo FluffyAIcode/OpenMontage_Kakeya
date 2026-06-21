@@ -45,7 +45,10 @@ from pydantic import BaseModel, Field
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-ORCH = REPO / "services" / "distributed_wan" / "grpc_orchestrator.py"
+# Orchestrator location is env-overridable so the gateway can live apart from the
+# distributed_wan checkout (e.g. on a rented GPU box).
+ORCH = Path(os.environ.get("ORCHESTRATOR_PATH",
+                           str(REPO / "services" / "distributed_wan" / "grpc_orchestrator.py")))
 JOBS_DIR = Path(os.environ.get("AGENT_GATEWAY_JOBS_DIR", str(REPO / "projects" / "_gateway_jobs")))
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
