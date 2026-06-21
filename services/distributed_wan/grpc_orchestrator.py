@@ -116,6 +116,9 @@ def main():
     ap.add_argument("--refine-steps", type=int, default=16)
     ap.add_argument("--strength", type=float, default=0.6)
     ap.add_argument("--seed", type=int, default=11)
+    ap.add_argument("--no-refine", action="store_true",
+                    help="single-worker DIRECT T2V (e.g. Mac-only): one generation at fw dims, "
+                         "no tiled CUDA refine. Auto-enabled when no refine-capable worker exists.")
     ap.add_argument("--out", default="distributed_wan_grpc.mp4")
     args = ap.parse_args()
 
@@ -127,8 +130,28 @@ def main():
     refine_workers = [w for w in workers if "refine" in w.ops]
     if not fw_workers:
         raise SystemExit("no framework-capable worker")
-    if not refine_workers:
-        raise SystemExit("no refine-capable worker (e.g. a CUDA worker)")
+
+    # DIRECT (no-refine) mode: one T2V generation on the framework worker, no tiled refine.
+    # This is the Mac-only / single-GPU path (mlx-video has no vid2vid). Auto-enabled when no
+    # refine worker is present, so the service still produces video with just the Mac.
+    if args.no_refine or not refine_workers:
+        fw = max(fw_workers, key=lambda w: w.speed)
+        nf = args.fw_frames
+        print(f"[orch] DIRECT (no-refine) on {fw.addr} ({fw.backend}) "
+              f"@ {args.fw_width}x{args.fw_height}x{nf}", flush=True)
+        mp4, gs = _consume(fw.stub.GenerateFramework(pb.FrameworkRequest(
+            prompt=args.prompt, width=args.fw_width, height=args.fw_height,
+            num_frames=nf, steps=args.proposer_steps, seed=args.seed)), "generate")
+        frames = _mp4_to_frames(mp4)
+        iio.mimwrite(args.out, [frames[i] for i in range(frames.shape[0])], format="mp4", fps=12,
+                     codec="libx264")
+        Image.fromarray(frames[frames.shape[0] // 2]).save(args.out.replace(".mp4", "_mid.png"))
+        import json
+        print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "direct",
+                                         "out": args.out, "gen_seconds": round(gs, 2),
+                                         "px": [args.fw_height, args.fw_width],
+                                         "frames": int(frames.shape[0])}), flush=True)
+        return
 
     tiles = [(jy, jx) for jy in range(NY) for jx in range(NX)]
     tile_prompts = {t: args.prompt for t in tiles}
