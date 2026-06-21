@@ -444,6 +444,26 @@ from scratch — use `mlx-video` / MPS+`mps-conv3d`; keep heavy video on CUDA.
 
 ---
 
+## Iteration 15 — worker transport: HTTP vs gRPC (ADR 0009)
+
+**Trigger:** "why not gRPC for the worker contract?"
+
+**Decision:** HTTP/JSON for the **worker/tool plane** because the workload is **coarse**
+(1 call = a whole tile, seconds–minutes compute, few-MB payload), **cross-region + NAT**, and
+**latency-tolerant**. gRPC's strengths (binary efficiency, HTTP/2 streaming/mux) are
+negligible here (~33% base64 on 2MB vs minutes of diffusion; no high-frequency/per-step
+traffic — that's the data plane B2 rules out cross-region), while its costs are real (grpcio
++ stubs on both ends → breaks the zero-dep stdlib orchestrator; HTTP/2 fussier through
+relays). HTTP's wins (stdlib-only client, easy NAT traversal, backend-agnostic CUDA+MLX
+workers, curl-debuggable) match the plane.
+
+This **matches Kakeya's own split** (mac-bridge §4.2): control/tool plane = coarse +
+latency-tolerant; **data plane = gRPC on a LAN** (which is what Kakeya uses `RuntimeService`
+for, and which can't cross regions anyway). gRPC is reserved for a LAN fleet node / streaming
+progress (SSE-over-HTTP covers progress without grpc deps).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

@@ -75,7 +75,8 @@ This **upgrades ADR 0006**. Previously the Mac was "text plane only." Now, becau
 on Apple Silicon, the Mac can also be a **coarse-grained WAN tile worker** in the
 distributed task-parallel pipeline (ADR 0006 §2): it implements the **same worker HTTP
 contract** (`/v1/framework`, `/v1/refine_tile`) but with an **MLX backend** (wrapping
-`mlx-video`) instead of CUDA diffusers. The orchestrator then treats Mac + vast workers
+`mlx-video`) instead of CUDA diffusers. (Why HTTP and not gRPC for this contract — given the
+coarse, cross-region workload — is decided in **ADR 0009**.) The orchestrator then treats Mac + vast workers
 uniformly, with **speed-weighted tile assignment** (give the slow Mac fewer/smaller tiles).
 
 Still valid:
