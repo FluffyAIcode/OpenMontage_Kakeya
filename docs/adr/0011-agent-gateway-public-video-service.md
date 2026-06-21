@@ -61,6 +61,23 @@ intelligence with the agent.
 - **Not faked:** `mode="agent"` (full multi-stage pipeline) returns an honest "agent runtime not
   attached" status unless `AGENT_RUNTIME_CMD` is set — the gateway never fabricates creative work.
 
+## 4b. Live verification
+
+Deployed on the vast H200 box against the live Mac+vast cluster and exercised through the HTTP API:
+
+```
+POST /v1/videos {"prompt":"a sea turtle gliding over a coral reef, sunbeams"}  (X-API-Key)
+  -> job 8f4b540d…  -> framework on Mac MLX -> 4 tiles refined on vast CUDA
+GET  /v1/jobs/8f4b540d…        -> {"status":"done","pct":1.0,...}
+GET  /v1/jobs/8f4b540d…/video  -> HTTP 200, real h264 1472×768 × 25-frame mp4
+```
+
+![Agent gateway result — produced via POST /v1/videos](tier01_evidence/gateway_demo_mid.png)
+
+The gateway → distributed-WAN → mp4 path is real end-to-end. Public exposure (`tailscale funnel`
+or a `kekaye.ai` A-record + Caddy) is the only remaining owner step — Funnel/HTTPS must be enabled
+by the tailnet admin; external DNS is out of the cloud agent's control.
+
 ## 5. Honest limits
 
 - A capable autonomous `mode="agent"` needs a strong reasoning LLM in the loop; the local Kakeya

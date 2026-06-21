@@ -604,8 +604,13 @@ decisions. Endpoints: `/`, `/healthz`, `/v1/capabilities`, `POST /v1/videos`, `G
 emits the real progress/`ORCH_DONE` protocol — full submit→run→poll→download lifecycle, auth gate,
 honest agent-mode-without-runtime, 404s. All pass.
 
-**Owner-dependent (cannot be done by the cloud agent):** pointing `kekaye.ai` DNS at a host. The
-Tailscale-Funnel `*.ts.net` URL is the zero-DNS fallback for an immediate public demo.
+**Live-verified:** deployed on the vast H200, submitted `POST /v1/videos` (sea-turtle prompt) with
+`X-API-Key`, the gateway drove the Mac+vast cluster, and `GET /v1/jobs/{id}/video` returned a real
+h264 1472×768×25 mp4 (`docs/adr/tier01_evidence/gateway_demo.{mp4,_mid.png}`).
+
+**Owner-dependent (cannot be done by the cloud agent):** pointing `kekaye.ai` DNS at a host, or
+enabling Tailscale Funnel/HTTPS (admin) for the zero-DNS `*.ts.net` public URL. `tailscale serve`
+hung waiting on tailnet HTTPS provisioning — that's an admin toggle, not a code issue.
 
 ---
 
