@@ -61,11 +61,16 @@ workers → concurrent streamed `RefineTile` → f_θ weight-map merge.
   mlx 1 tile of 4); **server-streamed progress** (25→100% per tile, interleaved across
   concurrent workers); concurrent dispatch + f_θ merge → a 1472×768 mp4. ✓
 
-**CUDA model backend:** unchanged diffusers code already validated on real GPU (ADR 0006 →
-real h264 video). The transport swap (HTTP→gRPC) is what's new and is now proven.
-**Pending:** a CUDA-over-gRPC real-video re-run on vast — the vast H200 was **unreachable**
-(connection reset) at decision time; rerun `grpc_worker.py --backend cuda` there when it
-returns. **MLX backend:** owner-run on the Mac; not testable here (no Mac).
+**CUDA-over-gRPC — VALIDATED on the live H200:** the cloud-agent orchestrator reached a
+`--backend cuda` gRPC worker over an SSH tunnel; the worker **server-streamed per-tile
+progress** (7→50%…) over gRPC; framework + 4 streamed `RefineTile` calls + f_θ merge produced
+a **real h264 1472×768 / 25-frame** seamless koi-pond video
+(`tier01_evidence/grpc_cuda_real_mid.png`, ffprobe-verified). So the full gRPC path —
+capability negotiation, streaming progress, concurrent refine, merge — works end-to-end with
+the real WAN model. (The 27 GB WAN cache on `/workspace` survived the box restart; only the
+root Python env was reinstalled.)
+
+**MLX backend:** owner-run on the Mac; not testable here (no Mac access — ADR 0005).
 
 ## 5. Boundary (unchanged)
 

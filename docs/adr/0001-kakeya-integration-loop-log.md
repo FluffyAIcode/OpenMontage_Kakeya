@@ -482,6 +482,23 @@ decision time; came back on a new port). MLX worker stays owner-run (no Mac here
 
 ---
 
+## Iteration 17 — CUDA-over-gRPC real video on the live H200 (completes ADR 0010)
+
+**Trigger:** vast box returned (new port). Reinstalled the root Python env (torch/diffusers/
+grpc); the **27 GB WAN cache on `/workspace` persisted** (no re-download). Bumped grpcio to
+≥1.81.1 to match the stubs.
+
+**Validated (real H200):** cloud-agent gRPC orchestrator → `--backend cuda` worker over a
+tunnel → **server-streamed per-tile progress** → framework + 4 streamed `RefineTile` + f_θ
+merge → **real h264 1472×768/25f seamless koi-pond video** (ffprobe-verified;
+`tier01_evidence/grpc_cuda_real_mid.png`). The full gRPC product path works end-to-end with
+the real WAN model. Single worker → tiles serialized (lock); N workers → parallel.
+
+**Status:** gRPC worker contract (ADR 0010) is **built + validated** (transport locally,
+CUDA real-video on GPU). MLX worker stays owner-run on the Mac (no Mac access).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
