@@ -26,7 +26,9 @@ REPO_URL="${REPO_URL:-https://github.com/FluffyAIcode/OpenMontage_Kakeya}"
 REPO_BRANCH="${REPO_BRANCH:-AgentMemory/wan-mlx-feasibility-cc88}"
 WORKDIR="${WORKDIR:-$HOME/openmontage-mac}"
 VENV="${VENV:-$HOME/.venv-distwan}"
-HF_MODEL="${HF_MODEL:-Wan-AI/Wan2.1-T2V-1.3B-Diffusers}"
+# mlx-video's convert wants the NATIVE Wan checkpoint layout (not the -Diffusers repo).
+HF_MODEL="${HF_MODEL:-Wan-AI/Wan2.1-T2V-1.3B}"
+WAN_CKPT="${WAN_CKPT:-$HOME/wan21_ckpt}"
 MODEL_DIR="${MODEL_DIR:-$HOME/wan21_mlx}"
 PORT="${PORT:-50051}"
 MLX_OPS="${MLX_OPS:-framework}"                 # add ',refine' only if your mlx-video has vid2vid
@@ -80,21 +82,19 @@ if [ "$STEP" = "all" ] || [ "$STEP" = "setup" ]; then
 fi
 cd "$WORKDIR/services/distributed_wan"
 
-# ---- 3. convert WAN 2.1 1.3B -> MLX (one-time) ----
+# ---- 3. download native Wan checkpoint + convert -> MLX (one-time) ----
 if { [ "$STEP" = "all" ] || [ "$STEP" = "setup" ]; } && [ ! -d "$MODEL_DIR" ]; then
-  say "3. convert $HF_MODEL -> MLX ($MODEL_DIR)"
-  # Per Blaizzy/mlx-video. If your mlx-video's convert entrypoint/flags differ,
-  # run its documented conversion once and point MODEL_DIR at the result.
-  if python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('mlx_video.wan_2.convert') else 1)"; then
-    python -m mlx_video.wan_2.convert --hf-model "$HF_MODEL" --out "$MODEL_DIR"
+  say "3. download $HF_MODEL + convert -> MLX ($MODEL_DIR)"
+  # 3a. fetch the native Wan checkpoint (convert reads this layout, not -Diffusers).
+  if [ ! -d "$WAN_CKPT" ] || [ -z "$(ls -A "$WAN_CKPT" 2>/dev/null)" ]; then
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('$HF_MODEL', local_dir='$WAN_CKPT')"
+  fi
+  # 3b. convert with the REAL mlx-video entrypoint (verified against package source):
+  #     mlx_video/models/wan_2/convert.py  --checkpoint-dir/--output-dir/--dtype
+  if python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('mlx_video.models.wan_2.convert') else 1)"; then
+    python -m mlx_video.models.wan_2.convert --checkpoint-dir "$WAN_CKPT" --output-dir "$MODEL_DIR" --dtype bfloat16
   else
-    cat >&2 <<EOF
-NOTE: couldn't find 'mlx_video.wan_2.convert'. Convert with your mlx-video's
-documented command (see its README), e.g.:
-    python -m mlx_video.convert --model $HF_MODEL --out $MODEL_DIR
-then re-run:  MODEL_DIR=$MODEL_DIR STEP=run bash mac_setup.sh
-EOF
-    exit 1
+    die "mlx_video.models.wan_2.convert not found — is mlx-video installed? (pip install -U mlx-video)"
   fi
 fi
 

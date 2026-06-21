@@ -149,34 +149,50 @@ class CudaBackend:
 # MLX backend (wraps mlx-video) — Mac mini; OWNER-RUN (untested in CI; no Mac here)
 # --------------------------------------------------------------------------- #
 class MlxBackend:
-    """Wraps `mlx-video` via its CLI. Ops advertised from --mlx-ops because the
-    exact T2V/I2V/vid2vid surface depends on the installed mlx-video version.
-    Adjust the command template to match your mlx-video if flags differ."""
+    """Wraps `mlx-video` (Blaizzy/mlx-video) via its real CLI.
+
+    Verified against the package source (mlx_video/models/wan_2/generate.py):
+        python -m mlx_video.models.wan_2.generate \
+            --model-dir DIR --prompt P --output-path OUT \
+            --width W --height H --num-frames N --steps S --seed SEED [--lora PATH STR]
+    where --num-frames must be 4n+1. mlx-video does T2V/I2V but has no vid2vid,
+    so this worker advertises the framework/T2V op only by default; high-res tile
+    REFINES run on a CUDA worker. Knobs below are env-overridable for other versions."""
 
     def __init__(self, model_dir: str, ops: list[str]):
         self.model_dir = model_dir
         self.ops = ops or ["framework"]
-        # Version-adaptable knobs (no code edits needed):
-        self.module = os.environ.get("MLX_T2V_MODULE", "mlx_video.wan_2.generate")
-        self.pass_dims = os.environ.get("MLX_PASS_DIMS", "0").lower() in ("1", "true", "yes")
-        self.v2v_flag = os.environ.get("MLX_V2V_FLAG", "")  # e.g. "--video" if your build has vid2vid
+        # Verified defaults for current mlx-video; env-overridable for other versions.
+        self.module = os.environ.get("MLX_T2V_MODULE", "mlx_video.models.wan_2.generate")
+        self.pass_dims = os.environ.get("MLX_PASS_DIMS", "1").lower() in ("1", "true", "yes")
+        self.pass_wh = os.environ.get("MLX_PASS_WH", "1").lower() in ("1", "true", "yes")
+        # Optional CausVid/Self-Forcing LoRA for a faithful few-step proposer: "path,strength"
+        self.lora = os.environ.get("MLX_LORA", "").strip()
+        self.v2v_flag = os.environ.get("MLX_V2V_FLAG", "")  # e.g. "--image" only if your build has vid2vid
 
     def health(self):
         return pb.HealthReply(device="mlx", backend="mlx-video", model=self.model_dir,
                               ops=self.ops, ready=True, note="Apple Silicon (MLX)",
                               relative_speed=float(os.environ.get("MLX_RELATIVE_SPEED", "0.12")))
 
-    def _run(self, prompt, seed, num_frames, steps, q, extra=None):
+    def _run(self, prompt, seed, num_frames, steps, q, extra=None, width=0, height=0):
         out = Path(tempfile.mkstemp(suffix=".mp4")[1])
-        # Documented mlx-video flags (README): --model-dir/--prompt/--output-path/--seed.
+        # Verified mlx-video flags: --model-dir/--prompt/--output-path/--seed.
         cmd = ["python", "-m", self.module, "--model-dir", self.model_dir,
                "--prompt", prompt, "--output-path", str(out), "--seed", str(seed)]
-        # num-frames/steps may be config-driven in some mlx-video versions; opt-in.
+        if self.pass_wh:
+            if width:
+                cmd += ["--width", str(width)]
+            if height:
+                cmd += ["--height", str(height)]
         if self.pass_dims:
             if num_frames:
                 cmd += ["--num-frames", str(num_frames)]
             if steps:
                 cmd += ["--steps", str(steps)]
+        if self.lora:
+            path, _, strength = self.lora.partition(",")
+            cmd += ["--lora", path.strip(), (strength.strip() or "1.0")]
         if extra:
             cmd += extra
         q.put_nowait(("p", 0.05))
@@ -202,7 +218,12 @@ class MlxBackend:
     def framework(self, req, q):
         if not ({"framework", "t2v"} & set(self.ops)):
             raise RuntimeError("this mlx worker is not configured for framework/t2v")
-        return self._run(req.prompt, req.seed or 42, req.num_frames or 25, req.steps or 6, q)
+        # mlx-video requires num_frames == 4n+1; snap down if the caller sent something else.
+        nf = req.num_frames or 25
+        if nf % 4 != 1:
+            nf = (nf // 4) * 4 + 1
+        return self._run(req.prompt, req.seed or 42, nf, req.steps or 6, q,
+                         width=req.width or 832, height=req.height or 480)
 
     def refine(self, req, q):
         # mlx-video typically has NO vid2vid; the Mac usually serves framework/T2V only and
@@ -252,11 +273,19 @@ class TestBackend:
 # gRPC servicer (streaming progress)
 # --------------------------------------------------------------------------- #
 class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
-    def __init__(self, backend):
+    def __init__(self, backend, ops_override=None):
         self.backend = backend
+        self.ops_override = ops_override  # restrict advertised ops (e.g. CUDA box = refine-only)
 
     def Health(self, request, context):
-        return self.backend.health()
+        h = self.backend.health()
+        if self.ops_override:
+            allowed = [o for o in h.ops if o in self.ops_override]
+            h2 = pb.HealthReply(device=h.device, backend=h.backend, model=h.model,
+                                ops=allowed or list(self.ops_override), ready=h.ready,
+                                note=h.note, relative_speed=h.relative_speed)
+            return h2
+        return h
 
     def _stream(self, op_fn, request, context):
         q: queue.Queue = queue.Queue(maxsize=256)
@@ -300,6 +329,8 @@ def main():
     ap.add_argument("--preload", action="store_true")
     ap.add_argument("--mlx-model-dir", default=os.environ.get("MLX_MODEL_DIR", ""))
     ap.add_argument("--mlx-ops", default=os.environ.get("MLX_OPS", "framework"))
+    ap.add_argument("--ops", default=os.environ.get("WORKER_OPS", ""),
+                    help="restrict advertised ops, e.g. 'refine' to make a CUDA box refine-only")
     args = ap.parse_args()
 
     if args.backend == "cuda":
@@ -314,10 +345,12 @@ def main():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8),
                          options=[("grpc.max_send_message_length", 256 * 1024 * 1024),
                                   ("grpc.max_receive_message_length", 256 * 1024 * 1024)])
-    pb_grpc.add_VideoWorkerServicer_to_server(VideoWorkerServicer(backend), server)
+    ops_override = [o.strip() for o in args.ops.split(",") if o.strip()] or None
+    pb_grpc.add_VideoWorkerServicer_to_server(VideoWorkerServicer(backend, ops_override), server)
     server.add_insecure_port(f"{args.host}:{args.port}")
     server.start()
-    print(f"[grpc_worker] {args.backend} backend listening on {args.host}:{args.port}", flush=True)
+    print(f"[grpc_worker] {args.backend} backend listening on {args.host}:{args.port}"
+          + (f" (ops={ops_override})" if ops_override else ""), flush=True)
     server.wait_for_termination()
 
 
