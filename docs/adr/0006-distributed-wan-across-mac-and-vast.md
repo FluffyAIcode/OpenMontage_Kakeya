@@ -13,7 +13,7 @@
 
 | # | Blocker | Consequence |
 |---|---------|-------------|
-| **B1** | **WAN runs only on CUDA.** WAN 2.1 is a PyTorch/diffusers model; the Mac's Apple-Silicon **MLX** GPU has no WAN implementation. | The Mac **cannot be a WAN compute node** at all. It can run Kakeya's MLX *LLM* (text), not video. |
+| **B1** | ~~**WAN runs only on CUDA**; the Mac's MLX has no WAN implementation.~~ **CORRECTED by ADR 0008:** WAN 2.1/2.2 *do* run on Apple Silicon via MLX ports (`mlx-video`) or PyTorch **MPS + `mps-conv3d` + fp16**. B1 was true only for *vanilla diffusers-on-MPS without patches* (our stack). | The Mac **can** be a (slow, RAM-bound, single-device) WAN tile worker — see ADR 0008 §5. It is still best used for the text plane given its speed; cross-region tensor-distribution remains impossible (B2). |
 | **B2** | **Cross-region forbids tensor/pipeline parallelism.** Splitting one WAN forward needs sub-ms interconnect; cross-region RTT is 10s–100s ms **per exchange**. | Per-denoise-step tensor exchange is hopeless. Only **coarse, latency-tolerant** traffic (prompts, mp4 clips) may cross the wire. |
 
 **Therefore tensor-parallel "WAN across Mac + vast" is impossible.** What *is* feasible is a

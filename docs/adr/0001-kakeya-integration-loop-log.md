@@ -422,6 +422,28 @@ benefit (memory-constrained GPUs only).
 
 ---
 
+## Iteration 14 — WAN-on-Apple-Silicon (MLX) feasibility (ADR 0008)
+
+**Trigger:** "evaluate feasibility of porting WAN 2.1 to MLX."
+
+**Finding:** **already done / highly feasible.** WAN 2.1/2.2 run on Apple Silicon via
+maintained MLX ports (`Blaizzy/mlx-video` — Wan2.1 1.3B/14B + LoRA/4-step; `Wan2.2-mlx`;
+`mlx-gen`), and via **PyTorch MPS + `mps-conv3d` + fp16** with no port. The historical
+blocker (3D-conv VAE on Apple Silicon) is solved both ways.
+
+**Honest correction:** ADR 0005 D5 / ADR 0006 B1 said "WAN can't run on the Mac/MLX" — that
+was true only for *vanilla diffusers-on-MPS without patches* (bf16 + Conv3D-MPS fail), our
+stack. Corrected in those ADRs + ADR 0008.
+
+**Upshot:** the Mac can now be a (slow, RAM-bound, single-device) **WAN tile worker** in the
+ADR 0006 task-parallel pipeline (same HTTP worker contract, MLX backend, speed-weighted tile
+assignment) — not just the text plane. Unchanged: cross-region tensor-distribution still
+impossible (latency, B2); MLX has no multi-device. Constraints are now **performance +
+memory** (1.3B on ≥32GB, 14B needs ≥64GB+q8), not feasibility. Recommendation: don't port
+from scratch — use `mlx-video` / MPS+`mps-conv3d`; keep heavy video on CUDA.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
