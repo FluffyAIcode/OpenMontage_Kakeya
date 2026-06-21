@@ -21,6 +21,9 @@ set -euo pipefail
 
 # ---- config (override via env) ----
 REPO_URL="${REPO_URL:-https://github.com/FluffyAIcode/OpenMontage_Kakeya}"
+# Branch that contains the gRPC worker + proto + this script. Until PR #2 is merged to
+# main, the gRPC files live ONLY on this branch — cloning main will NOT have them.
+REPO_BRANCH="${REPO_BRANCH:-AgentMemory/wan-mlx-feasibility-cc88}"
 WORKDIR="${WORKDIR:-$HOME/openmontage-mac}"
 VENV="${VENV:-$HOME/.venv-distwan}"
 HF_MODEL="${HF_MODEL:-Wan-AI/Wan2.1-T2V-1.3B-Diffusers}"
@@ -64,10 +67,11 @@ fi
 if [ "$STEP" = "all" ] || [ "$STEP" = "setup" ]; then
   say "2. fetch worker code + generate gRPC stubs"
   if [ ! -d "$WORKDIR/.git" ]; then
-    git clone --depth 1 "$REPO_URL" "$WORKDIR"
+    git clone -b "$REPO_BRANCH" --depth 1 "$REPO_URL" "$WORKDIR"
   else
-    git -C "$WORKDIR" pull --ff-only || true
+    git -C "$WORKDIR" fetch origin "$REPO_BRANCH" && git -C "$WORKDIR" checkout "$REPO_BRANCH" && git -C "$WORKDIR" pull --ff-only || true
   fi
+  [ -f "$WORKDIR/services/distributed_wan/grpc_worker.py" ] || die "grpc_worker.py not found after clone — wrong branch? ($REPO_BRANCH)"
   cd "$WORKDIR/services/distributed_wan"
   python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/video_worker.proto
   # generated grpc stub uses a flat import; ensure it resolves as a flat module
