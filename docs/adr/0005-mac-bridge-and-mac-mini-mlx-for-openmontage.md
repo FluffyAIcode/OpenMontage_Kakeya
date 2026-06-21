@@ -32,7 +32,7 @@ Actions self-hosted-runner** dispatch — **not** a GPU connection or a serving 
 | D2 | **Requires user-side setup I can't perform.** The Mac must be **registered as a GitHub Actions self-hosted runner** on a repo I can push to, with the `mac-bridge.yaml` workflow + bridge code present, via `scripts/mac_bridge/setup_mac.sh`. That needs admin on the physical Mac **and** the repo — only the owner can do it. |
 | D3 | **Wrong repo.** The bridge + workflow + runner registration live in the **Kakeya engine repo**, not `OpenMontage_Kakeya` (where this work happens). None of it exists here. |
 | D4 | **CI/eval, not serving.** Even fully set up, the bridge dispatches MLX *test/bench* presets and returns commits — it does not serve live inference to OpenMontage. |
-| D5 | **MLX serves LLM *text*, not WAN video.** The Mac's MLX runs Kakeya's LLM verifier/proposer (the text path, ADR 0001), not the CUDA diffusers video gateway. MLX multi-tenant is **serial-only** (README). |
+| D5 | The Mac's MLX runs Kakeya's LLM verifier/proposer (the text path, ADR 0001). **NOTE (corrected by ADR 0008):** WAN video *can* also run on Apple Silicon (MLX ports / MPS+`mps-conv3d`) — just slowly and single-device; so the Mac is not strictly "text-only," though text remains its best role here. MLX multi-tenant is **serial-only** (README). |
 | D6 | **WAN latency kills the data plane.** Doc §4.2: cloud↔desk RTT 30–150 ms/block makes token-level spec-decode across that boundary non-viable — *"proposer and verifier must share a LAN."* The Mac can be a **control/tool plane** node, never a low-latency data-plane peer to a cloud GPU. |
 
 **Verdict:** this cloud agent **cannot** establish the connection or "use the Mac mini GPU"

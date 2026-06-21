@@ -1,4 +1,14 @@
-# Distributed WAN inference — Mac mini (text) + vast CUDA (video), across regions
+# Distributed WAN inference — Mac mini + vast CUDA, across regions
+
+> **Transport: gRPC** (`proto/video_worker.proto`, `grpc_worker.py`, `grpc_orchestrator.py`)
+> is the product contract — typed schema, **server-streaming progress**, deadlines,
+> capability negotiation, speed-weighted routing (ADR 0010). The earlier HTTP
+> `worker.py`/`orchestrator.py` remain as the simpler reference (ADR 0009). The Mac runs an
+> **MLX** worker (`mac_setup.sh`, wrapping `mlx-video`, ADR 0008) as "another GPU"; vast runs
+> the **CUDA** worker. Run `python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/video_worker.proto`
+> to (re)generate stubs.
+
+
 
 Lets a **cloud agent** drive a WAN video production that uses **both** a local **Mac mini**
 GPU and one-or-more **vast** GPUs that sit in **different regions** — *correctly*, within the
@@ -11,6 +21,40 @@ real constraints (see `docs/adr/0006-distributed-wan-across-mac-and-vast.md`).
 - **Cross-region kills tensor/pipeline parallelism.** Per-step tensor exchange over
   tens–hundreds of ms RTT is hopeless. Only **coarse, latency-tolerant** traffic crosses the
   wire: prompts (bytes) and base64-mp4 clips. **No per-step tensors ever leave a box.**
+
+## Mac mini — complete setup (one script)
+
+Run on the Mac (Apple Silicon, macOS ≥ 14). It is **owner-run** — the cloud agent cannot
+reach a local Mac (ADR 0005).
+
+```bash
+# full setup + run (clones repo, venv+deps, generates stubs, converts WAN->MLX, runs worker)
+bash services/distributed_wan/mac_setup.sh
+# later, just run:            STEP=run bash services/distributed_wan/mac_setup.sh
+# enable refine if your mlx-video has vid2vid:
+#   MLX_OPS="framework,refine" MLX_V2V_FLAG="--video" bash services/distributed_wan/mac_setup.sh
+```
+
+It performs: preflight (arm64 / macOS≥14 / Python≥3.11) → venv + `mlx mlx-video grpcio
+grpcio-tools imageio ...` → clone repo + `protoc` the stubs → convert `Wan2.1-T2V-1.3B` to
+MLX → (Tailscale hint) → start `grpc_worker.py --backend mlx`.
+
+**Honest role:** mlx-video does **T2V/I2V**, usually **no vid2vid**, so the Mac advertises the
+**framework/T2V** op by default and high-res **refines run on a CUDA worker**. Version-adaptable
+env knobs (no code edits): `MLX_T2V_MODULE`, `MLX_PASS_DIMS`, `MLX_OPS`, `MLX_V2V_FLAG`,
+`MODEL_DIR`, `PORT`, `MLX_RELATIVE_SPEED`. If a flag differs in your mlx-video build the worker
+**fails loudly** with the last output (no silent garbage).
+
+Verify, then point the orchestrator at it:
+```bash
+# on any host that can reach the Mac (LAN IP or Tailscale name):
+python - <<'PY'
+import grpc, video_worker_pb2 as pb, video_worker_pb2_grpc as g
+h=g.VideoWorkerStub(grpc.insecure_channel("<mac>:50051")).Health(pb.HealthRequest(),timeout=15)
+print(h.backend, h.device, list(h.ops), h.relative_speed)   # expect mlx-video mlx ['framework'...]
+PY
+WAN_WORKERS="<vast-host>:50051,<mac>:50051" python services/distributed_wan/grpc_orchestrator.py --prompt "..." --out final.mp4
+```
 
 ## The design (what each node does)
 

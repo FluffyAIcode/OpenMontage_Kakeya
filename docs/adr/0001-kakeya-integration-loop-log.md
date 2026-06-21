@@ -422,6 +422,169 @@ benefit (memory-constrained GPUs only).
 
 ---
 
+## Iteration 14 — WAN-on-Apple-Silicon (MLX) feasibility (ADR 0008)
+
+**Trigger:** "evaluate feasibility of porting WAN 2.1 to MLX."
+
+**Finding:** **already done / highly feasible.** WAN 2.1/2.2 run on Apple Silicon via
+maintained MLX ports (`Blaizzy/mlx-video` — Wan2.1 1.3B/14B + LoRA/4-step; `Wan2.2-mlx`;
+`mlx-gen`), and via **PyTorch MPS + `mps-conv3d` + fp16** with no port. The historical
+blocker (3D-conv VAE on Apple Silicon) is solved both ways.
+
+**Honest correction:** ADR 0005 D5 / ADR 0006 B1 said "WAN can't run on the Mac/MLX" — that
+was true only for *vanilla diffusers-on-MPS without patches* (bf16 + Conv3D-MPS fail), our
+stack. Corrected in those ADRs + ADR 0008.
+
+**Upshot:** the Mac can now be a (slow, RAM-bound, single-device) **WAN tile worker** in the
+ADR 0006 task-parallel pipeline (same HTTP worker contract, MLX backend, speed-weighted tile
+assignment) — not just the text plane. Unchanged: cross-region tensor-distribution still
+impossible (latency, B2); MLX has no multi-device. Constraints are now **performance +
+memory** (1.3B on ≥32GB, 14B needs ≥64GB+q8), not feasibility. Recommendation: don't port
+from scratch — use `mlx-video` / MPS+`mps-conv3d`; keep heavy video on CUDA.
+
+---
+
+## Iteration 15 — worker transport: HTTP vs gRPC (ADR 0009)
+
+**Trigger:** "why not gRPC for the worker contract?"
+
+**Decision:** HTTP/JSON for the **worker/tool plane** because the workload is **coarse**
+(1 call = a whole tile, seconds–minutes compute, few-MB payload), **cross-region + NAT**, and
+**latency-tolerant**. gRPC's strengths (binary efficiency, HTTP/2 streaming/mux) are
+negligible here (~33% base64 on 2MB vs minutes of diffusion; no high-frequency/per-step
+traffic — that's the data plane B2 rules out cross-region), while its costs are real (grpcio
++ stubs on both ends → breaks the zero-dep stdlib orchestrator; HTTP/2 fussier through
+relays). HTTP's wins (stdlib-only client, easy NAT traversal, backend-agnostic CUDA+MLX
+workers, curl-debuggable) match the plane.
+
+This **matches Kakeya's own split** (mac-bridge §4.2): control/tool plane = coarse +
+latency-tolerant; **data plane = gRPC on a LAN** (which is what Kakeya uses `RuntimeService`
+for, and which can't cross regions anyway). gRPC is reserved for a LAN fleet node / streaming
+progress (SSE-over-HTTP covers progress without grpc deps).
+
+---
+
+## Iteration 16 — gRPC worker contract (product decision, ADR 0010)
+
+**Trigger:** "usable product, not a toy → use gRPC; run mlx-video on the Mac as another GPU."
+
+**Built:** `proto/video_worker.proto` (+ stubs), `grpc_worker.py` (backends: **cuda** diffusers
+full ops, **mlx** wrapping mlx-video owner-run, **test** transport-only), `grpc_orchestrator.py`
+(capability + **speed-weighted** routing, **server-streaming progress**, concurrent refine,
+f_θ merge), `mac_setup.sh`. ADR 0010 supersedes ADR 0009's HTTP recommendation for the product.
+
+**Validated (gRPC transport, local, no GPU):** two test workers (speed 3.0/1.0) → capability
+negotiation; **exact 3:1 speed-weighted tile split** (cuda 3, mlx 1 of 4); per-tile streamed
+progress interleaved across concurrent workers; f_θ merge → 1472×768 mp4. ✓
+
+**Pending → done in iteration 17:** CUDA-over-gRPC real video (vast box was unreachable at
+decision time; came back on a new port). MLX worker stays owner-run (no Mac here).
+
+---
+
+## Iteration 17 — CUDA-over-gRPC real video on the live H200 (completes ADR 0010)
+
+**Trigger:** vast box returned (new port). Reinstalled the root Python env (torch/diffusers/
+grpc); the **27 GB WAN cache on `/workspace` persisted** (no re-download). Bumped grpcio to
+≥1.81.1 to match the stubs.
+
+**Validated (real H200):** cloud-agent gRPC orchestrator → `--backend cuda` worker over a
+tunnel → **server-streamed per-tile progress** → framework + 4 streamed `RefineTile` + f_θ
+merge → **real h264 1472×768/25f seamless koi-pond video** (ffprobe-verified;
+`tier01_evidence/grpc_cuda_real_mid.png`). The full gRPC product path works end-to-end with
+the real WAN model. Single worker → tiles serialized (lock); N workers → parallel.
+
+**Status:** gRPC worker contract (ADR 0010) is **built + validated** (transport locally,
+CUDA real-video on GPU). MLX worker stays owner-run on the Mac (no Mac access).
+
+---
+
+## Iteration 18 — complete Mac mini MLX gRPC worker script
+
+**Trigger:** "give the complete script to run on the Mac mini."
+
+**Delivered:** `services/distributed_wan/mac_setup.sh` — turnkey: preflight (arm64/macOS≥14/
+py≥3.11) → venv + mlx/mlx-video/grpc deps → clone repo + protoc stubs → convert
+Wan2.1-T2V-1.3B→MLX → Tailscale hint → run `grpc_worker.py --backend mlx`. Made `MlxBackend`
+**config-driven** (env: `MLX_T2V_MODULE`, `MLX_PASS_DIMS`, `MLX_OPS`, `MLX_V2V_FLAG`,
+`MLX_RELATIVE_SPEED`) so it adapts to the installed mlx-video without code edits and **fails
+loudly** (no silent garbage) if flags differ. bash -n + py_compile clean.
+
+**Honest:** mlx-video = T2V/I2V (usually no vid2vid) → Mac advertises **framework/T2V** by
+default; refines stay on CUDA unless the owner's mlx-video has vid2vid (`MLX_OPS+=refine`,
+`MLX_V2V_FLAG`). Not runnable here (no Mac); owner runs it, then `WAN_WORKERS` includes the
+Mac and the orchestrator speed-weights it.
+
+---
+
+## Iteration 19 — live cross-region Mac(MLX)+vast(CUDA) gRPC cluster wired; MLX module-path bug fixed
+
+**Trigger:** owner reported the Mac mini MLX gRPC worker is up and reachable on the tailnet
+(`TCP *:50051 LISTEN`, `nc -vz 100.78.64.43 50051 succeeded`). Goal: actually run the
+distributed WAN job across both GPUs.
+
+**What worked (verified, not claimed):**
+- **Cross-region transport over a userspace-networking tailnet.** The vast H200 container has
+  **no `/dev/net/tun`**, so tailscaled runs in userspace mode (SOCKS5 on `:1055`); a normal
+  `connect()` to `100.x` does not route, and the box has neither `socat` nor `ncat`. Built
+  `services/distributed_wan/socks5_forward.py` (stdlib only): `127.0.0.1:55051` → SOCKS5(1055)
+  → `mac:50051`. gRPC then dials the local forward as plaintext h2c.
+- **Mac Health over gRPC** through the forward: `backend=mlx-video device=mlx ops=['framework']
+  speed=0.12` — a **real MLX worker** (not the test backend), ~214 ms tailnet RTT.
+- **Two-GPU cluster staged:** vast CUDA restarted **refine-only** (`--ops refine`,
+  `ops=['refine']`, warm) on `:50051`; Mac framework-only on `:55051`. Orchestrator routes
+  framework→Mac, the 4 refine tiles→vast — genuinely both GPUs.
+
+**Bug found + fixed (the real blocker):** a live `GenerateFramework` to the Mac streamed
+progress 0%→5% then surfaced a clean gRPC `INTERNAL`: `No module named 'mlx_video.wan_2'`.
+Checked the actual Blaizzy/mlx-video source: the entrypoints are
+`mlx_video.models.wan_2.generate` / `.convert` (not `mlx_video.wan_2.*`), with verified flags
+`--model-dir/--prompt/--output-path/--width/--height/--num-frames/--steps/--seed/--lora`
+(num-frames must be 4n+1). Fixed `MlxBackend` defaults + `mac_setup.sh`
+(download native `Wan-AI/Wan2.1-T2V-1.3B` checkpoint → `mlx_video.models.wan_2.convert
+--checkpoint-dir/--output-dir`). Added `--ops`/`WORKER_OPS` so a CUDA box can be refine-only.
+
+**Honest status:** the orchestrator → Mac → mlx-video path is wired and proven end-to-end at
+the transport/streaming layer; the final pixels require the **Mac worker to restart on the
+fixed code** (the running worker still has the old module path baked in) and a valid converted
+MLX model dir — both Mac-side actions the cloud agent cannot perform remotely. On restart +
+confirmation, the orchestrator produces the real Mac-proposer + vast-refiner video.
+
+---
+
+## Iteration 20 — REAL Mac(MLX)+vast(CUDA) distributed video produced ✅
+
+**Result:** the full cross-region distributed WAN pipeline ran end-to-end and produced a real,
+seamless **1472×768 × 25-frame h264** video (`docs/adr/tier01_evidence/dwan_mac_vast.mp4`,
+mid-frame `dwan_mac_vast_mid.png`) — a red fox in a snowy forest, no visible tile seams.
+
+**Measured (live, two regions):**
+- **Proposer = Mac mini Apple-Silicon MLX** (`mlx-video`): low-res framework `480×256`, returned
+  `(16, 256, 480, 3)` in **98.4 s** (includes per-call model load: umt5-xxl T5 + transformer + VAE).
+- **Refine = vast H200 CUDA** (diffusers WAN vid2vid): 4 tiles, per-tile 6.7–23.1 s,
+  **refine wall 24.5 s** (concurrent dispatch, serialized by the worker GPU lock).
+- **Transport:** orchestrator on vast → `localhost:50051` (CUDA, refine-only) + `localhost:55051`
+  → `socks5_forward.py` → SOCKS5(tailscaled) → Mac `:50051`, all gRPC server-streaming.
+
+**Two bugs fixed to get here (both real, surfaced not masked):**
+1. **MLX OOM** (Metal "Insufficient Memory") at full `832×480×25` VAE decode → made the proposer
+   low-res by design (`--fw-width/--fw-height/--fw-frames`, temporal+spatial resample to canvas)
+   + aggressive VAE tiling (`MLX_TILING`). Fox proposer at `480×256×13` fits comfortably.
+2. **Idle stream drop** (`Stream removed (Socket closed)`): the MLX worker emits 5% then goes
+   silent during the long T5 load; the idle HTTP/2 stream was cut over the SOCKS5/tailnet tunnel.
+   Added a worker **heartbeat** (keepalive Progress every 5 s) + gRPC keepalive on both ends.
+
+**What this proves:** WAN runs on Apple Silicon via MLX (ADR 0008), the gRPC worker contract
+(ADR 0010) federates heterogeneous GPUs (MLX + CUDA) across regions, and the coarse-to-fine
+proposer/refiner split (ADR 0004) yields a seamless beyond-native-resolution result from two
+modest, geographically-separated machines. The Mac is genuinely "another GPU".
+
+**Honest limits:** cross-region latency + per-call MLX model reload make the MLX proposer the
+wall-clock bottleneck (~98 s vs ~25 s refine); this is a *capability/feasibility* win, not a
+throughput win. For raw speed, co-locate CUDA workers (ADR 0006 §5).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
