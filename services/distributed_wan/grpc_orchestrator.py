@@ -44,7 +44,11 @@ X_OFF = [i * (WT - OV) for i in range(NX)]
 Y_OFF = [j * (HT - OV) for j in range(NY)]
 CW, CH = X_OFF[-1] + WT, Y_OFF[-1] + HT
 _GRPC_OPTS = [("grpc.max_send_message_length", 256 * 1024 * 1024),
-              ("grpc.max_receive_message_length", 256 * 1024 * 1024)]
+              ("grpc.max_receive_message_length", 256 * 1024 * 1024),
+              ("grpc.keepalive_time_ms", 15000),
+              ("grpc.keepalive_timeout_ms", 30000),
+              ("grpc.keepalive_permit_without_calls", 1),
+              ("grpc.http2.max_pings_without_data", 0)]
 
 
 class Worker:

@@ -308,11 +308,20 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
 
         threading.Thread(target=run, daemon=True).start()
         yield pb.Progress(pct=0.0, stage="load")
+        # Heartbeat: MLX model load (umt5-xxl T5) is a long SILENT phase; without periodic
+        # messages the idle HTTP/2 stream gets dropped over the SOCKS5/tailnet tunnel. Emit a
+        # keepalive Progress every few seconds while the worker thread is still running.
+        last = 0.0
         while True:
-            kind, val = q.get()
+            try:
+                kind, val = q.get(timeout=5)
+            except queue.Empty:
+                yield pb.Progress(pct=last, stage="load")  # keepalive (keeps bytes flowing)
+                continue
             if kind == "done":
                 break
-            yield pb.Progress(pct=float(val), stage="denoise")
+            last = float(val)
+            yield pb.Progress(pct=last, stage="denoise")
         if "err" in result:
             context.abort(grpc.StatusCode.INTERNAL, result["err"])
             return
@@ -349,7 +358,12 @@ def main():
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8),
                          options=[("grpc.max_send_message_length", 256 * 1024 * 1024),
-                                  ("grpc.max_receive_message_length", 256 * 1024 * 1024)])
+                                  ("grpc.max_receive_message_length", 256 * 1024 * 1024),
+                                  ("grpc.keepalive_time_ms", 15000),
+                                  ("grpc.keepalive_timeout_ms", 30000),
+                                  ("grpc.keepalive_permit_without_calls", 1),
+                                  ("grpc.http2.max_pings_without_data", 0),
+                                  ("grpc.http2.min_ping_interval_without_data_ms", 5000)])
     ops_override = [o.strip() for o in args.ops.split(",") if o.strip()] or None
     pb_grpc.add_VideoWorkerServicer_to_server(VideoWorkerServicer(backend, ops_override), server)
     server.add_insecure_port(f"{args.host}:{args.port}")
