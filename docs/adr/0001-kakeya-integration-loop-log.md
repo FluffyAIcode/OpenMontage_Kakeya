@@ -992,6 +992,35 @@ before relying on it unattended.
 
 ---
 
+## Iteration 35 — ephemeral-vast durability: auto-recover refiner; 2-Mac fallback (no restart)
+
+**Ask:** vast GPUs are released/recreated often — guarantee the cluster auto-recovers the vast
+refiner after every recreate, and keeps producing video (head proposer + f_θ) while vast is gone.
+
+**Built (3 parts, no gateway restarts):**
+1. **Dynamic membership** — gateway `AGENT_GATEWAY_WORKERS_FILE`: the worker list is re-read from a
+   file **per job + healthz**, so a refiner can be added/removed live. Falls back to `WAN_WORKERS`.
+2. **Head supervisor** (`vast_refiner_supervisor.sh`, launchd KeepAlive): each cycle — if vast is
+   reachable, scp worker files + run idempotent `vast_bootstrap.sh` (install deps incl. protobuf/ftfy,
+   launch cuda refine-only in tmux), (re)open the `ssh -L 50052→vast:50051` tunnel, and write
+   `BASE_WORKERS,127.0.0.1:50052` → **3-node**; if vast is unreachable or still loading, write
+   `BASE_WORKERS` → **2-Mac fallback** (head proposer + headless SR via f_θ).
+3. **Idempotent vast bootstrap** so a FRESH box self-converges to a running refiner.
+
+**Live proof (full release→recreate cycle):**
+```
+22:51 vast refiner ONLINE -> 3-node (added 127.0.0.1:50052)     healthz workers=[head,MacB,vast]
+22:52 vast 104.202.252.41:29999 unreachable -> 2-Mac fallback   healthz workers=[head,MacB]
+22:53 [bootstrap] worker already listening; vast refiner ONLINE -> 3-node   healthz workers=[head,MacB,vast]
+```
+Membership flipped 3-node ↔ 2-Mac with **no gateway restart** (dynamic file). Deployed on the head as
+`ai.kakeya.vastsupervisor` (launchd) + gateway switched to the dynamic file. Runbook:
+`deploy/ephemeral-vast-refiner.md`. **After a recreate, only the SSH endpoint changes** — edit
+`~/.kakeya/vast.env` (or set `VAST_RESOLVE_CMD` for zero-touch); the supervisor does the rest.
+**Test:** dynamic workers-file membership (3-node↔2-Mac, no restart); 13/13 pass.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
