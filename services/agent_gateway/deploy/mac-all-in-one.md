@@ -5,7 +5,7 @@ worker and the control host; everything talks over `localhost`. No vast, no rela
 hop — durable and owner-controlled.
 
 ```
-User ─ https://kakeya.ai ─► Cloudflare ──tunnel(outbound)──► Mac mini
+User ─ https://agent.kakeya.ai ─► Cloudflare ──tunnel(outbound)──► Mac mini
                                                                ├─ cloudflared
                                                                ├─ agent_gateway (:8088)
                                                                │     │ subprocess → grpc_orchestrator (DIRECT, no-refine)
@@ -60,18 +60,19 @@ auto-creates the proxied DNS record.
 ```bash
 cloudflared tunnel login                                   # browser: pick the kakeya.ai zone
 cloudflared tunnel create kakeya-gw
-cloudflared tunnel route dns kakeya-gw kakeya.ai
+cloudflared tunnel route dns kakeya-gw agent.kakeya.ai   # subdomain; apex stays on the other site
 cloudflared tunnel run --url http://localhost:8088 kakeya-gw
 ```
 
-Zone settings: SSL/TLS = **Full**, *Always Use HTTPS* = On, the `kakeya.ai` record **Proxied**
-(orange cloud). Full details in [`cloudflare.md`](cloudflare.md).
+Expose on a **subdomain** (`agent.kakeya.ai`) — the `kakeya.ai` apex already serves another site.
+Zone settings: SSL/TLS = **Full**, *Always Use HTTPS* = On, the `agent.kakeya.ai` record
+**Proxied** (orange cloud). Full details in [`cloudflare.md`](cloudflare.md).
 
 ## 4. Verify publicly
 
 ```bash
-curl -s https://kakeya.ai/healthz
-# open https://kakeya.ai in a browser -> web UI -> type a prompt -> get a clip from the Mac GPU
+curl -s https://agent.kakeya.ai/healthz
+# open https://agent.kakeya.ai in a browser -> web UI -> type a prompt -> get a clip from the Mac GPU
 ```
 
 ## Notes

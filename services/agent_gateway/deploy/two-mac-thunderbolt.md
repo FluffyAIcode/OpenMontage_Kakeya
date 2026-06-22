@@ -4,7 +4,7 @@ Two Thunderbolt-bridged Mac minis form a small MLX cluster. This runbook deploys
 service across both, with one Mac as the head (gateway + `cloudflared`).
 
 ```
-User ─ https://kakeya.ai ─► Cloudflare ──tunnel──► Mac A (HEAD)
+User ─ https://agent.kakeya.ai ─► Cloudflare ──tunnel──► Mac A (HEAD)
                                                      ├─ cloudflared
                                                      ├─ agent_gateway (:8088, POOL mode)
                                                      └─ MLX worker A (:50051)
@@ -66,16 +66,16 @@ Then expose at `kakeya.ai` via Cloudflare Tunnel (see [`cloudflare.md`](cloudfla
 
 ```bash
 brew install cloudflared
-cloudflared service install <DASHBOARD_TOKEN>     # public hostname kakeya.ai -> http://localhost:8088
+cloudflared service install <DASHBOARD_TOKEN>     # public hostname agent.kakeya.ai -> http://localhost:8088
 ```
 
 ## 4. Verify the 2× parallelism
 
 ```bash
-curl -s https://kakeya.ai/healthz        # {"pool_mode":true,"parallel":2,"workers":[A,B],...}
+curl -s https://agent.kakeya.ai/healthz        # {"pool_mode":true,"parallel":2,"workers":[A,B],...}
 # fire two jobs; both go "running" immediately (one per Mac), not queued:
 for p in "a red fox in snow" "a sea turtle over a reef"; do
-  curl -s -X POST https://kakeya.ai/v1/videos -H 'Content-Type: application/json' \
+  curl -s -X POST https://agent.kakeya.ai/v1/videos -H 'Content-Type: application/json' \
        -H 'X-API-Key: <your-secret>' -d "{\"prompt\":\"$p\"}"; echo; done
 ```
 

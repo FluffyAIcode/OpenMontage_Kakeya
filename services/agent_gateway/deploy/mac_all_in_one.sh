@@ -82,11 +82,12 @@ cat <<EOF
 \033[1;32mLocal service is up:\033[0m  http://127.0.0.1:$PORT  (logs in $LOG_DIR)
   $([ -n "$API_KEY" ] && echo "auth: send header  X-API-Key: $API_KEY" || echo "auth: OFF (set API_KEY=... for a public deployment)")
 
-Next: expose it at https://kakeya.ai with a Cloudflare Tunnel (outbound; no open ports):
+Next: this Mac is the RELAY — expose it at https://agent.kakeya.ai with a Cloudflare Tunnel
+(outbound; no open ports). Use a SUBDOMAIN — the kakeya.ai apex already serves another site.
   brew install cloudflared
-  # Option A (dashboard token):  cloudflared service install <TOKEN>     # add public hostname kakeya.ai -> http://localhost:$PORT
+  # Option A (dashboard token):  cloudflared service install <TOKEN>   # public hostname agent.kakeya.ai -> http://localhost:$PORT
   # Option B (CLI):              cloudflared tunnel login && cloudflared tunnel create kakeya-gw \\
-  #                              && cloudflared tunnel route dns kakeya-gw kakeya.ai \\
+  #                              && cloudflared tunnel route dns kakeya-gw agent.kakeya.ai \\
   #                              && cloudflared tunnel run --url http://localhost:$PORT kakeya-gw
 See services/agent_gateway/deploy/cloudflare.md for the full walk-through.
 EOF

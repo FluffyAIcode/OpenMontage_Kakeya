@@ -692,6 +692,27 @@ rate-limit/per-key auth), parameterize the refine canvas, benchmark the real box
 
 ---
 
+## Iteration 25 — link check + relay moved to the Mac (subdomain on Cloudflare)
+
+**Link test (`检测链接`):** `kakeya.ai` resolves to Cloudflare (`172.67.167.146`) and returns
+HTTP 200, but it **serves an unrelated "AgentMate" site**, not our gateway (`/healthz` returns that
+HTML, not JSON). No `agent/video/api/...` subdomain exists. **Verdict: the OpenMontage link is NOT
+wired** — the apex is taken by another app.
+
+**Decision (owner):** the **relay lives on the Mac mini**, not on a GPU. The Mac cluster is the
+always-on entry (cloudflared) + proposer/refiner; vast is an on-demand refiner only. This removes
+the prior "can't reach the cluster because vast is off" failure mode.
+
+**Done:** updated all deploy docs to (a) run `cloudflared` (the relay) on the **Mac**, and (b)
+expose the agent on a **subdomain `agent.kakeya.ai`** so it coexists with the existing apex site —
+`cloudflare.md`, `mac-all-in-one.md`, `two-mac-thunderbolt.md`, `mac_all_in_one.sh`.
+
+**To go live (owner, on the Mac):** run the gateway (`mac_all_in_one.sh`) + a Cloudflare Tunnel
+with public hostname `agent.kakeya.ai → http://localhost:8088`. Then `https://agent.kakeya.ai/healthz`
+returns JSON and I can verify end-to-end.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
