@@ -782,6 +782,31 @@ the ADR 0013 §5 hardening follow-up.
 
 ---
 
+## Iteration 29 — BOTH Mac GPUs utilized in parallel over Thunderbolt ✅
+
+**Headless Mac fixed:** the second Mac (`allen@Allens-Mac-mini`, `169.254.27.104`) now reports a
+**display Online (2180×1200)** — a monitor/dummy plug is attached, which relaxes the macOS GPU
+watchdog. A direct test render on its GPU completed cleanly (`ORCH_DONE`, 117 s, real h264 clip,
+no `kIOGPUCommandBufferCallbackErrorTimeout`). So both Mac GPUs render.
+
+**Topology clarified:** head Mac `fluffy314@fluffy314s-Mac-mini` (`169.254.187.239`, display, gateway
++ cloudflared); headless Mac `allen@Allens-Mac-mini` (`169.254.27.104`, display now attached). The
+Thunderbolt bridge is a fast LAN link, not GPU pooling (mlx-video has no sharding) — "both GPUs" =
+one MLX worker per Mac + the gateway distributing jobs.
+
+**Both GPUs in parallel (verified):** the mac-bridge gateway variant uses
+`AGENT_GATEWAY_WORKER_MODE` (`cluster`=distributed/serialized, `round_robin`=one job per worker,
+N parallel). Relaunched with `WORKER_MODE=round_robin` + both workers → `max_video_jobs=2`. Two
+public jobs submitted back-to-back (deer + whale) were **both `running` simultaneously** (one per
+Mac) and **both finished** as real h264 480×256×16 clips
+(`tier01_evidence/dualgpu_{deer,whale}.mp4`, `dualgpu_whale_mid.png`, `headless_gpu_proof.mp4`).
+
+**State:** `agent.kakeya.ai` open demo now load-balances across **both Mac mini GPUs** in parallel
+(2× throughput). Access to the headless Mac is via head Mac → `ssh allen@169.254.27.104` (key
+trust established).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
