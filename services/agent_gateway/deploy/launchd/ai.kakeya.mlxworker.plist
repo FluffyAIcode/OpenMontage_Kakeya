@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MLX worker LaunchAgent template. Substitute __HOME__ (e.g. /Users/allen),
+     __HOST__ (127.0.0.1 on the head Mac, the Thunderbolt-bridge IP on a peer),
+     and __MODEL_DIR__ (e.g. __HOME__/wan21_mlx). Install to ~/Library/LaunchAgents/. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.kakeya.mlxworker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-dimsu</string>
+    <string>__HOME__/.venv-distwan/bin/python</string>
+    <string>grpc_worker.py</string>
+    <string>--backend</string><string>mlx</string>
+    <string>--host</string><string>__HOST__</string>
+    <string>--port</string><string>50051</string>
+    <string>--mlx-model-dir</string><string>__MODEL_DIR__</string>
+    <string>--mlx-ops</string><string>framework</string>
+  </array>
+  <key>WorkingDirectory</key><string>__HOME__/openmontage-mac/services/distributed_wan</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__HOME__/.venv-distwan/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>MLX_TILING</key><string>aggressive</string>
+    <key>MLX_RELATIVE_SPEED</key><string>0.12</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>__HOME__/.openmontage-logs/worker.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.openmontage-logs/worker.log</string>
+</dict>
+</plist>

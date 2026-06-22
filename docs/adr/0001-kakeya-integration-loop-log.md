@@ -807,6 +807,27 @@ trust established).
 
 ---
 
+## Iteration 30 — launchd auto-start (cluster survives crashes/reboots)
+
+**Done (agent-driven via SSH):** installed per-user **LaunchAgents** (not LaunchDaemons — they run
+in the GUI/Aqua session so the GPU watchdog stays relaxed) with `RunAtLoad` + `KeepAlive`:
+- Head Mac (`fluffy314`): `ai.kakeya.mlxworker` (`127.0.0.1:50051`, under `caffeinate`,
+  `MLX_TILING=aggressive`) + `ai.kakeya.gateway` (`:8088`, `WORKER_MODE=round_robin`, both workers).
+- Headless Mac (`allen`): `ai.kakeya.mlxworker` (`169.254.27.104:50051`).
+All `state=running` via `launchctl print gui/501/…`; PATH is venv-first so the `mlx_video` subprocess
+resolves. Verified end-to-end: a public job (`d588c5fe44e3`) ran on the launchd-managed cluster →
+`done`.
+
+**Artifacts:** `services/agent_gateway/deploy/launchd/` (README + templated
+`ai.kakeya.{mlxworker,gateway}.plist`).
+
+**Reboot caveat (documented):** LaunchAgents start at **user login**, so unattended reboot recovery
+also needs **auto-login** enabled, and **FileVault** (if on) blocks unattended pre-boot unlock. Crash
+recovery (`KeepAlive`) works regardless. `cloudflared` should also be made a service
+(`sudo cloudflared service install <token>`) for full reboot durability.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
