@@ -89,6 +89,8 @@ def test_orchestrator_single_refine_pipeline(tmp_path):
     """Two in-process workers (framework + refine) -> --single-refine produces an mp4 at out-res."""
     prop, p_prop = _serve(["framework"])   # head / proposer
     refn, p_refn = _serve(["refine"])      # headless / refiner
+    import time as _t
+    _t.sleep(0.5)  # let both gRPC servers be ready before the orchestrator subprocess dials
     try:
         out = tmp_path / "pipe.mp4"
         env = {**os.environ, "WAN_WORKERS": f"127.0.0.1:{p_prop},127.0.0.1:{p_refn}"}

@@ -920,6 +920,50 @@ orchestrator auto-promotes to the tiled V2V pipeline) or an mlx-video build with
 head, so the headless never got work — not a bug, a command-arg artifact. Pipeline mode makes the
 two-role split the gateway default so the headless is always engaged on each job.
 
+**Live verification (this iteration):** head Mac repo moved to this branch; Mac B's `grpc_worker.py`
+updated (scp from head — Mac B's `git fetch` hangs on a GitHub HTTPS credential prompt) and its
+launchd refiner restarted; head worker+gateway reloaded. Public job through `agent.kakeya.ai`:
+`ORCH_DONE mode=pipeline proposer=127.0.0.1:50051 refiner=192.168.68.51:50051 px=[480,832] frames=25
+proposer=105.7s refine=0.36s`; downloaded clip = h264 832×480 25f. The **headless Mac did the
+refine** (refine≈0.36 s confirms the SR path). ✅
+
+---
+
+## Iteration 34 — 3-node: head=proposer, headless(MLX)+vast(CUDA)=refiners (gateway mode selector)
+
+**Ask:** add a vast CUDA box so the cluster runs head Mac = proposer, **and BOTH** the headless Mac
+(MLX SR refine) **and** vast (CUDA generative refine) as refiners.
+
+**Code gap found:** the gateway *forced* `--single-refine` in the 2-Mac case, which picks only ONE
+(fastest) refiner — with vast present that would idle the headless Mac. Fixed by replacing the
+binary pool/pipeline switch with an explicit **`AGENT_GATEWAY_MODE`**:
+- `auto` (default): pass ALL workers, no flag → orchestrator auto-picks single-pass (MLX refiner)
+  vs **tiled** (CUDA refiner). 2-Mac → single on the Mac; 3-node → tiled across both refiners.
+- `distributed`: tiled + **`--refine-spread roundrobin`** so EVERY refiner (incl. the slow MLX Mac)
+  gets a share of tiles instead of being optimized out by speed-weighting.
+- `pipeline`: force `--single-refine` (head + one refiner). `pool`: per-worker DIRECT (throughput).
+- back-compat: `AGENT_GATEWAY_WORKER_POOL=1` ⇒ `pool`. `/healthz` reports the resolved `mode`.
+
+**Orchestrator:** new `--refine-spread {weighted,roundrobin}`. In the tiled path, `roundrobin` deals
+tiles fastest-first in turn so the MLX Mac contributes (2 tiles MLX-SR / 2 tiles CUDA-V2V on a
+4-tile, 2-refiner job) rather than vast taking all 4 (an 8× speed gap zeroes the Mac under
+`weighted`). Tile→worker log now prints `addr(backend)`.
+
+**Vast refiner bringup:** `services/distributed_wan/vast_refiner_setup.sh` — installs gRPC+diffusers,
+launches `grpc_worker --backend cuda --ops refine --preload` (refine-only so the head stays the sole
+proposer), and documents reachability (head→vast SSH `-L 50052:localhost:50051` tunnel / Tailscale /
+mapped port).
+
+**Honesty:** with a fast CUDA refiner present, `weighted` would (correctly, for wall-time) route all
+tiles to vast and idle the Mac; `distributed`/`roundrobin` is the explicit "use all three" mode at
+some wall-time cost. MLX tiles are SR (interpolative); vast tiles are generative — blended by the
+f_θ weight-map merge. **Tests:** gateway mode resolution (auto/pipeline/distributed/pool) +
+orchestrator pipeline; 12/12 pass.
+
+**Networking note:** neither the cloud agent nor the head Mac can yet SSH the fresh vast box
+(`Permission denied (publickey)`). Unblock = add the head Mac's pubkey to vast `authorized_keys`;
+then the head drives vast bringup + the `-L` tunnel + the 3-node run autonomously.
+
 ---
 
 ## Open follow-ups (next iterations)

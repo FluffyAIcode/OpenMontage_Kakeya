@@ -60,12 +60,32 @@ AGENT_RUNTIME_CMD = os.environ.get("AGENT_RUNTIME_CMD", "").strip()
 # Worker-pool mode: treat each WAN_WORKERS entry as an INDEPENDENT GPU (e.g. two Thunderbolt-
 # bridged Mac minis). Each job runs on ONE worker (DIRECT no-refine), N jobs in parallel = N×
 # throughput. Off => classic single-orchestrator call using ALL workers (proposer+CUDA-refiner).
-POOL_MODE = (os.environ.get("AGENT_GATEWAY_WORKER_POOL", "0").lower() in ("1", "true", "yes")
-             and len(WORKER_LIST) > 1)
-# Pipeline mode = >1 worker and pool OFF: ONE job spans ALL workers (head=proposer, headless=
-# refine via the orchestrator's --single-refine path). Higher resolution/quality per job, one
-# render at a time. POOL trades that for throughput (one DIRECT job per Mac, N in parallel).
-PIPELINE_MODE = (not POOL_MODE) and len(WORKER_LIST) > 1
+def _resolve_mode() -> str:
+    """Gateway scheduling mode (AGENT_GATEWAY_MODE), with back-compat for the old POOL flag.
+
+      auto        (default): ONE job uses ALL workers; the orchestrator auto-picks single-pass
+                  (MLX refiner) or tiled (CUDA refiner) refine. Covers 2-Mac (head+headless) and
+                  3-node (head + headless + vast) without a flag.
+      distributed: like auto but forces tiled refine and round-robin tile spread so EVERY refiner
+                  (incl. a slow MLX Mac) gets work — head=proposer, headless+vast=refiners.
+      pipeline:   force single-pass refine on ONE refiner (head=proposer, one refiner).
+      pool:       each job runs DIRECT on ONE worker, N jobs in parallel (throughput; every
+                  worker must be framework-capable).
+    """
+    m = os.environ.get("AGENT_GATEWAY_MODE", "").strip().lower()
+    if not m:
+        m = ("pool" if os.environ.get("AGENT_GATEWAY_WORKER_POOL", "0").lower()
+             in ("1", "true", "yes") else "auto")
+    if m not in ("auto", "distributed", "pipeline", "pool"):
+        m = "auto"
+    if m == "pool" and len(WORKER_LIST) <= 1:
+        m = "auto"  # pool needs >1 worker to mean anything
+    return m
+
+
+GW_MODE = _resolve_mode()
+POOL_MODE = (GW_MODE == "pool")
+PIPELINE_MODE = (GW_MODE == "pipeline")
 MAX_LOG = 200
 
 _PCT = re.compile(r"(\w[\w ()@,]*?):\s+(\d+)%")
@@ -155,9 +175,13 @@ def _run_video_job(job: Job):
            "--out", str(out_path)]
     if POOL_MODE:
         cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
-    elif PIPELINE_MODE:
-        # head proposes (low-res), headless refines the whole clip (SR/V2V) in one pass.
-        cmd.append("--single-refine")
+    elif GW_MODE == "pipeline":
+        cmd.append("--single-refine")  # head proposes, one refiner does the whole clip (SR/V2V)
+    elif GW_MODE == "distributed":
+        # head proposes, ALL refiners share the tiled refine; round-robin so every refiner
+        # (incl. the slow MLX Mac) gets at least its share of tiles.
+        cmd += ["--refine-spread", "roundrobin"]
+    # auto: pass neither -> orchestrator decides single-pass (MLX refiner) vs tiled (CUDA refiner).
     env = {**os.environ, "WAN_WORKERS": job_workers}
     _log(job, f"$ grpc_orchestrator --prompt {job.prompt!r} (worker={job_workers})")
     try:
@@ -228,9 +252,8 @@ def _dispatch(job: Job):
 
 @app.get("/healthz")
 def healthz():
-    mode = "pool" if POOL_MODE else ("pipeline" if PIPELINE_MODE else "single")
-    return {"status": "ok", "workers": WORKER_LIST or None, "pool_mode": POOL_MODE,
-            "pipeline_mode": PIPELINE_MODE, "mode": mode,
+    return {"status": "ok", "workers": WORKER_LIST or None, "mode": GW_MODE,
+            "pool_mode": POOL_MODE, "pipeline_mode": PIPELINE_MODE,
             "parallel": (len(WORKER_LIST) if POOL_MODE else 1), "orchestrator": ORCH.exists(),
             "agent_runtime": bool(AGENT_RUNTIME_CMD), "jobs": len(JOBS)}
 
@@ -352,9 +375,8 @@ def main():
     ap.add_argument("--port", type=int, default=8088)
     args = ap.parse_args()
     import uvicorn
-    mode = "pool" if POOL_MODE else ("pipeline" if PIPELINE_MODE else "single")
     print(f"[agent_gateway] http://{args.host}:{args.port}  workers={WORKER_LIST or '(unset)'}  "
-          f"mode={mode} parallel={len(WORKER_LIST) if POOL_MODE else 1}  "
+          f"mode={GW_MODE} parallel={len(WORKER_LIST) if POOL_MODE else 1}  "
           f"auth={'on' if API_KEY else 'off'}", flush=True)
     uvicorn.run(app, host=args.host, port=args.port)
 

@@ -128,6 +128,9 @@ def main():
                          "of 2x2 tiled CUDA V2V. Auto-enabled when the chosen refiner is MLX.")
     ap.add_argument("--out-width", type=int, default=WT, help="final width for --single-refine output")
     ap.add_argument("--out-height", type=int, default=HT, help="final height for --single-refine output")
+    ap.add_argument("--refine-spread", choices=["weighted", "roundrobin"], default="weighted",
+                    help="tiled refine assignment: 'weighted' (speed-weighted; a fast refiner may "
+                         "take all tiles) or 'roundrobin' (every refiner gets a share, incl. slow MLX).")
     ap.add_argument("--out", default="distributed_wan_grpc.mp4")
     args = ap.parse_args()
 
@@ -226,13 +229,21 @@ def main():
     canvas = np.stack([np.asarray(Image.fromarray(framework[t_idx[i]]).resize((CW, CH), Image.BICUBIC))
                        for i in range(args.frames)])
 
-    # 4) SPEED-WEIGHTED tile assignment across refine workers
-    loads = {id(w): 0 for w in refine_workers}
+    # 4) tile assignment across refine workers
     assign = {}
-    for t in tiles:
-        w = min(refine_workers, key=lambda w: (loads[id(w)] + 1) / max(w.speed, 1e-3))
-        assign[t] = w; loads[id(w)] += 1
-    print("[orch] tile->worker: " + ", ".join(f"{t}->{assign[t].device}" for t in tiles), flush=True)
+    if args.refine_spread == "roundrobin":
+        # every refiner gets a share (head=proposer, headless+vast=refiners): deal tiles in turn,
+        # fastest first, so a slow MLX Mac still contributes instead of being optimized out.
+        order = sorted(refine_workers, key=lambda w: -w.speed)
+        for i, t in enumerate(tiles):
+            assign[t] = order[i % len(order)]
+    else:
+        loads = {id(w): 0 for w in refine_workers}
+        for t in tiles:
+            w = min(refine_workers, key=lambda w: (loads[id(w)] + 1) / max(w.speed, 1e-3))
+            assign[t] = w; loads[id(w)] += 1
+    print("[orch] tile->worker: " + ", ".join(f"{t}->{assign[t].addr}({assign[t].backend})"
+                                              for t in tiles), flush=True)
 
     def do_refine(t):
         jy, jx = t; oy, ox = Y_OFF[jy], X_OFF[jx]

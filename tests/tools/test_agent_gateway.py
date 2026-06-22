@@ -33,6 +33,7 @@ def client(tmp_path, monkeypatch):
         "    ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
+        "ap.add_argument('--refine-spread')\n"
         "x=ap.parse_args()\n"
         "print('[orch]   framework:    5%',flush=True)\n"
         "print('[orch]   framework:  100%',flush=True)\n"
@@ -115,42 +116,73 @@ def test_job_404(client):
     assert c.get("/v1/jobs/nope").status_code == 404
 
 
-def test_pipeline_mode_two_macs(tmp_path, monkeypatch):
-    """Two Macs, pool OFF -> pipeline mode: ONE job spans both workers with --single-refine
-    (head=proposer, headless=refine). Asserts the flag + both workers reach the orchestrator."""
+def _mode_fixture(tmp_path, monkeypatch, *, workers, mode_env):
+    """Spin up the gateway with a fake orch that records the flags it was called with."""
     fake = tmp_path / "fake_orch.py"
     fake.write_text(
         "import argparse,json,os,pathlib\n"
         "ap=argparse.ArgumentParser()\n"
-        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height']: ap.add_argument(a)\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--refine-spread']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
         "x=ap.parse_args()\n"
-        "assert x.single_refine, 'pipeline mode must pass --single-refine'\n"
-        "assert not x.no_refine, 'pipeline mode must NOT pass --no-refine'\n"
-        "assert ',' in os.environ.get('WAN_WORKERS',''), 'pipeline must receive ALL workers'\n"
-        "print('[orch]   framework:  100%',flush=True)\n"
+        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS','')}\n"
         "print('[orch]   refine:  100%',flush=True)\n"
-        "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'PIPEMP4')\n"
-        "print('ORCH_DONE '+json.dumps({'out':x.out,'mode':'pipeline'}),flush=True)\n"
+        "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'MODEMP4')\n"
+        "print('FLAGS '+json.dumps(flags),flush=True)\n"
+        "print('ORCH_DONE '+json.dumps({'out':x.out,'mode':'x'}),flush=True)\n"
     )
-    monkeypatch.setenv("WAN_WORKERS", "10.0.0.1:50051,10.0.0.2:50051")
+    monkeypatch.setenv("WAN_WORKERS", workers)
     monkeypatch.delenv("AGENT_GATEWAY_WORKER_POOL", raising=False)
+    if mode_env is None:
+        monkeypatch.delenv("AGENT_GATEWAY_MODE", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_GATEWAY_MODE", mode_env)
     monkeypatch.setenv("AGENT_GATEWAY_JOBS_DIR", str(tmp_path / "jobs"))
     monkeypatch.delenv("AGENT_GATEWAY_API_KEY", raising=False)
     sys.path.insert(0, str(REPO / "services" / "agent_gateway"))
     import server
     importlib.reload(server)
     server.ORCH = fake
-    assert server.POOL_MODE is False and server.PIPELINE_MODE is True
-    c = TestClient(server.app)
-    h = c.get("/healthz").json()
-    assert h["mode"] == "pipeline" and h["pipeline_mode"] is True
-    jid = c.post("/v1/videos", json={"prompt": "fox pipeline"}).json()["job_id"]
+    return TestClient(server.app), server
+
+
+def _job_flags(c, jid):
     j = _wait(c, jid)
     assert j["status"] == "done", j
-    assert "refine" in "\n".join(j["log"])
-    assert c.get(f"/v1/jobs/{jid}/video").content == b"PIPEMP4"
+    line = next(l for l in j["log"] if l.startswith("FLAGS "))
+    import json as _json
+    return _json.loads(line[len("FLAGS "):])
+
+
+def test_auto_mode_lets_orchestrator_decide(tmp_path, monkeypatch):
+    """Default (no mode env), >1 worker -> 'auto': pass ALL workers, NO single/no-refine flag."""
+    c, server = _mode_fixture(tmp_path, monkeypatch, workers="10.0.0.1:50051,10.0.0.2:50051", mode_env=None)
+    assert server.GW_MODE == "auto"
+    assert c.get("/healthz").json()["mode"] == "auto"
+    jid = c.post("/v1/videos", json={"prompt": "auto"}).json()["job_id"]
+    f = _job_flags(c, jid)
+    assert f["single_refine"] is False and f["no_refine"] is False and f["refine_spread"] is None
+    assert "," in f["workers"]
+
+
+def test_pipeline_mode_forces_single_refine(tmp_path, monkeypatch):
+    """AGENT_GATEWAY_MODE=pipeline -> head=proposer + one refiner via --single-refine."""
+    c, server = _mode_fixture(tmp_path, monkeypatch, workers="10.0.0.1:50051,10.0.0.2:50051", mode_env="pipeline")
+    assert server.GW_MODE == "pipeline" and server.PIPELINE_MODE is True
+    assert c.get("/healthz").json()["mode"] == "pipeline"
+    f = _job_flags(c, c.post("/v1/videos", json={"prompt": "pipe"}).json()["job_id"])
+    assert f["single_refine"] is True and f["no_refine"] is False
+
+
+def test_distributed_mode_spreads_tiles(tmp_path, monkeypatch):
+    """AGENT_GATEWAY_MODE=distributed -> head=proposer, ALL refiners share tiles (roundrobin)."""
+    c, server = _mode_fixture(tmp_path, monkeypatch,
+                              workers="10.0.0.1:50051,10.0.0.2:50051,10.0.0.3:50051", mode_env="distributed")
+    assert server.GW_MODE == "distributed"
+    assert c.get("/healthz").json()["mode"] == "distributed"
+    f = _job_flags(c, c.post("/v1/videos", json={"prompt": "dist"}).json()["job_id"])
+    assert f["refine_spread"] == "roundrobin" and f["single_refine"] is False and f["no_refine"] is False
 
 
 def test_pool_mode_two_macs(tmp_path, monkeypatch):
