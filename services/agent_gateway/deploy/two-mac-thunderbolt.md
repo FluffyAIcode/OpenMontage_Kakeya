@@ -30,6 +30,18 @@ no `mlx.launch`, no cross-device collectives) and **no vid2vid**. Consequences:
 > If you later add a CUDA box (or `mlx-video` gains vid2vid/distributed), drop it into
 > `WAN_WORKERS` and the orchestrator re-enables the high-res refined pipeline with no code change.
 
+## ⚠️ Do not address the peer by its `169.254.x` Thunderbolt link-local IP
+
+Link-local `169.254.x` addresses are **not stable across reboots** and, when a Mac has `169.254.x`
+on more than one interface (e.g. `bridge0` + `en9`), the head Mac can get **"No route to host"**
+to the peer's bridge IP (ambiguous route) — this took the headless worker offline after a reboot
+(ADR 0001 Iteration 32). Instead:
+
+- Bind the peer's worker to **`--host 0.0.0.0`** (all interfaces), and
+- Address it from the gateway by a **stable IP** — the peer's **LAN IP with a DHCP reservation**
+  (e.g. `192.168.68.51`) or its **Tailscale IP**. (gRPC can't resolve `.local` mDNS names, so use
+  an IP, not the `*.local` name, in `WAN_WORKERS`.)
+
 ## 1. Find the Thunderbolt-bridge IPs
 
 macOS auto-creates a `bridge0` interface for the Thunderbolt bridge. On each Mac:

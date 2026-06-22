@@ -856,6 +856,26 @@ auto-login) was unaffected throughout.
 
 ---
 
+## Iteration 32 — UI job failures: headless worker unreachable via link-local; fixed via LAN IP
+
+**Symptom:** UI renders intermittently failed — `orchestrator exited rc=1`,
+`No route to host ipv4:169.254.27.104:50051`. Round-robin sent ~half the jobs to the headless
+worker, addressed by its **Thunderbolt link-local** IP.
+
+**Cause:** the head Mac has `169.254.x` on multiple interfaces (`bridge0` + `en9`), so the route to
+the peer's `169.254.27.104` was ambiguous → "No route to host". (The headless worker was up and
+bound; the head just couldn't route to that link-local addr.)
+
+**Fix:** rebind the headless worker to **`--host 0.0.0.0`** and point the gateway at the peer's
+**stable LAN IP** `192.168.68.51:50051` (gRPC can't resolve `.local` mDNS). Verified: two public
+jobs ran in parallel (head + headless) and both completed. `agent.kakeya.ai` healthy again.
+
+**Durability note:** `192.168.68.51` is DHCP — set a **DHCP reservation** (router) or use the
+peer's **Tailscale IP** so it can't change on a future lease/reboot. Docs updated
+(`deploy/two-mac-thunderbolt.md`): never address a peer by `169.254.x`.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
