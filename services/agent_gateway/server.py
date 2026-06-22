@@ -62,6 +62,10 @@ AGENT_RUNTIME_CMD = os.environ.get("AGENT_RUNTIME_CMD", "").strip()
 # throughput. Off => classic single-orchestrator call using ALL workers (proposer+CUDA-refiner).
 POOL_MODE = (os.environ.get("AGENT_GATEWAY_WORKER_POOL", "0").lower() in ("1", "true", "yes")
              and len(WORKER_LIST) > 1)
+# Pipeline mode = >1 worker and pool OFF: ONE job spans ALL workers (head=proposer, headless=
+# refine via the orchestrator's --single-refine path). Higher resolution/quality per job, one
+# render at a time. POOL trades that for throughput (one DIRECT job per Mac, N in parallel).
+PIPELINE_MODE = (not POOL_MODE) and len(WORKER_LIST) > 1
 MAX_LOG = 200
 
 _PCT = re.compile(r"(\w[\w ()@,]*?):\s+(\d+)%")
@@ -117,6 +121,8 @@ class VideoRequest(BaseModel):
     fw_frames: int = 13
     proposer_steps: int = 6
     refine_steps: int = 16
+    out_width: int = 832      # final resolution for the single-pass (pipeline) refine
+    out_height: int = 480
     seed: int = 11
 
 
@@ -145,9 +151,13 @@ def _run_video_job(job: Job):
            "--fw-width", str(p["fw_width"]), "--fw-height", str(p["fw_height"]),
            "--fw-frames", str(p["fw_frames"]), "--proposer-steps", str(p["proposer_steps"]),
            "--refine-steps", str(p["refine_steps"]), "--seed", str(p["seed"]),
+           "--out-width", str(p.get("out_width", 832)), "--out-height", str(p.get("out_height", 480)),
            "--out", str(out_path)]
     if POOL_MODE:
         cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
+    elif PIPELINE_MODE:
+        # head proposes (low-res), headless refines the whole clip (SR/V2V) in one pass.
+        cmd.append("--single-refine")
     env = {**os.environ, "WAN_WORKERS": job_workers}
     _log(job, f"$ grpc_orchestrator --prompt {job.prompt!r} (worker={job_workers})")
     try:
@@ -168,7 +178,7 @@ def _run_video_job(job: Job):
             mp = _PCT.search(line)
             if mp:
                 label, pct = mp.group(1).strip(), int(mp.group(2))
-                job.stage = "refine" if label.startswith("tile") else "framework"
+                job.stage = "refine" if (label.startswith("tile") or label.startswith("refine")) else "framework"
                 job.pct = pct / 100.0
         proc.wait()
     finally:
@@ -218,7 +228,9 @@ def _dispatch(job: Job):
 
 @app.get("/healthz")
 def healthz():
+    mode = "pool" if POOL_MODE else ("pipeline" if PIPELINE_MODE else "single")
     return {"status": "ok", "workers": WORKER_LIST or None, "pool_mode": POOL_MODE,
+            "pipeline_mode": PIPELINE_MODE, "mode": mode,
             "parallel": (len(WORKER_LIST) if POOL_MODE else 1), "orchestrator": ORCH.exists(),
             "agent_runtime": bool(AGENT_RUNTIME_CMD), "jobs": len(JOBS)}
 
@@ -340,8 +352,9 @@ def main():
     ap.add_argument("--port", type=int, default=8088)
     args = ap.parse_args()
     import uvicorn
+    mode = "pool" if POOL_MODE else ("pipeline" if PIPELINE_MODE else "single")
     print(f"[agent_gateway] http://{args.host}:{args.port}  workers={WORKER_LIST or '(unset)'}  "
-          f"pool={POOL_MODE} parallel={len(WORKER_LIST) if POOL_MODE else 1}  "
+          f"mode={mode} parallel={len(WORKER_LIST) if POOL_MODE else 1}  "
           f"auth={'on' if API_KEY else 'off'}", flush=True)
     uvicorn.run(app, host=args.host, port=args.port)
 

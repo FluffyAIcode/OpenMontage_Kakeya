@@ -18,7 +18,11 @@
   <dict>
     <key>PATH</key><string>__HOME__/.venv-distwan/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>WAN_WORKERS</key><string>__WAN_WORKERS__</string>
-    <key>AGENT_GATEWAY_WORKER_MODE</key><string>round_robin</string>
+    <!-- Mode (with >1 worker):
+         PIPELINE (default, no key): ONE job spans both Macs (head=proposer framework worker,
+           headless=refine worker) via the orchestrator's --single-refine path. Higher res/quality.
+         POOL: add  <key>AGENT_GATEWAY_WORKER_POOL</key><string>1</string>  -> each job runs DIRECT
+           on ONE Mac, N jobs in parallel = N× throughput (every Mac worker must advertise framework). -->
     <key>ORCHESTRATOR_PATH</key><string>__HOME__/openmontage-mac/services/distributed_wan/grpc_orchestrator.py</string>
     <key>AGENT_GATEWAY_JOBS_DIR</key><string>__HOME__/.openmontage-jobs</string>
   </dict>

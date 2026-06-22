@@ -155,9 +155,15 @@ class MlxBackend:
         python -m mlx_video.models.wan_2.generate \
             --model-dir DIR --prompt P --output-path OUT \
             --width W --height H --num-frames N --steps S --seed SEED [--lora PATH STR]
-    where --num-frames must be 4n+1. mlx-video does T2V/I2V but has no vid2vid,
-    so this worker advertises the framework/T2V op only by default; high-res tile
-    REFINES run on a CUDA worker. Knobs below are env-overridable for other versions."""
+    where --num-frames must be 4n+1. mlx-video does T2V/I2V but has no vid2vid.
+
+    refine op on MLX (for a two-Mac proposer->refiner pipeline, ADR 0014):
+      - if MLX_V2V_FLAG is set (a build that DOES have vid2vid) -> generative V2V refine.
+      - otherwise -> a SPATIAL super-resolution refine (Lanczos upscale + unsharp mask).
+        This is NON-generative: it raises the proposer's resolution and crispens it, but
+        does not synthesize new detail. It lets the headless Mac serve a real 'refine'
+        role on stock mlx-video; for true generative detail, set MLX_V2V_FLAG or route
+        refine to a CUDA worker. Knobs below are env-overridable for other versions."""
 
     def __init__(self, model_dir: str, ops: list[str]):
         self.model_dir = model_dir
@@ -172,10 +178,18 @@ class MlxBackend:
         # VAE tiling cuts decode-time Metal memory on unified-memory Macs (OOM is usually the
         # VAE decode before writeout). "aggressive" is safest for small Mac minis.
         self.tiling = os.environ.get("MLX_TILING", "aggressive")
+        # Spatial-SR refine knobs (used when refine runs without vid2vid).
+        self.sr_sharpen = float(os.environ.get("MLX_SR_SHARPEN", "60"))  # unsharp percent; 0 disables
+
+    def _refine_mode(self) -> str:
+        return "v2v" if self.v2v_flag else "sr"
 
     def health(self):
+        note = "Apple Silicon (MLX)"
+        if "refine" in self.ops:
+            note += f" · refine={self._refine_mode()}"
         return pb.HealthReply(device="mlx", backend="mlx-video", model=self.model_dir,
-                              ops=self.ops, ready=True, note="Apple Silicon (MLX)",
+                              ops=self.ops, ready=True, note=note,
                               relative_speed=float(os.environ.get("MLX_RELATIVE_SPEED", "0.12")))
 
     def _run(self, prompt, seed, num_frames, steps, q, extra=None, width=0, height=0):
@@ -231,19 +245,42 @@ class MlxBackend:
                          width=req.width or 832, height=req.height or 480)
 
     def refine(self, req, q):
-        # mlx-video typically has NO vid2vid; the Mac usually serves framework/T2V only and
-        # refines run on a CUDA worker. Enable refine ONLY if your mlx-video has vid2vid.
         if "refine" not in self.ops:
-            raise RuntimeError("this mlx worker advertises no 'refine' op (mlx-video usually lacks "
-                               "vid2vid). Route refines to a CUDA worker; use the Mac for framework/T2V.")
-        if not self.v2v_flag:
-            raise RuntimeError("set MLX_V2V_FLAG (e.g. --video) to your mlx-video's vid2vid input flag")
-        inp = Path(tempfile.mkstemp(suffix=".mp4")[1]); inp.write_bytes(req.mp4)
-        try:
-            return self._run(req.prompt, req.seed or 7, req.num_frames or 25, req.steps or 16, q,
-                             extra=[self.v2v_flag, str(inp), "--strength", str(req.strength or 0.6)])
-        finally:
-            inp.unlink(missing_ok=True)
+            raise RuntimeError("this mlx worker advertises no 'refine' op. Launch with "
+                               "--mlx-ops refine (or framework,refine) to make this Mac a refiner.")
+        # A) generative V2V — only if this mlx-video build has vid2vid (MLX_V2V_FLAG set).
+        if self.v2v_flag:
+            inp = Path(tempfile.mkstemp(suffix=".mp4")[1]); inp.write_bytes(req.mp4)
+            try:
+                return self._run(req.prompt, req.seed or 7, req.num_frames or 25, req.steps or 16, q,
+                                 extra=[self.v2v_flag, str(inp), "--strength", str(req.strength or 0.6)],
+                                 width=req.width or 832, height=req.height or 480)
+            finally:
+                inp.unlink(missing_ok=True)
+        # B) stock mlx-video has no vid2vid -> spatial super-resolution refine (Lanczos + unsharp).
+        #    Honest: this upscales/crispens the proposer; it does not synthesize new detail.
+        return self._sr_refine(req, q)
+
+    def _sr_refine(self, req, q):
+        """Non-generative refine: Lanczos-upscale the proposer to (width,height) and crispen.
+
+        Pure PIL/numpy (no MLX/Metal), so it is cheap, OOM-safe and CI-testable. Lets the
+        headless Mac serve a real 'refine' role: head proposes low-res, this worker raises it
+        to the target resolution. For generative detail set MLX_V2V_FLAG / use a CUDA refiner."""
+        import numpy as np
+        from PIL import Image, ImageFilter
+        frames = mp4_to_frames(req.mp4)
+        tw, th = int(req.width or 832), int(req.height or 480)
+        n = int(frames.shape[0]) or 1
+        sharpen = ImageFilter.UnsharpMask(radius=2, percent=int(self.sr_sharpen), threshold=2)
+        out = []
+        for i in range(frames.shape[0]):
+            q.put_nowait(("p", (i + 1) / n))
+            im = Image.fromarray(_to_uint8(frames[i:i + 1])[0]).convert("RGB").resize((tw, th), Image.LANCZOS)
+            if self.sr_sharpen > 0:
+                im = im.filter(sharpen)
+            out.append(np.asarray(im, np.uint8))
+        return np.stack(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -267,9 +304,15 @@ class TestBackend:
 
     def refine(self, req, q):
         import numpy as np
+        from PIL import Image
         for i in range(4):
             q.put_nowait(("p", (i + 1) / 4)); time.sleep(0.03)
-        frames = mp4_to_frames(req.mp4).copy()
+        frames = mp4_to_frames(req.mp4)
+        tw, th = int(req.width or frames.shape[2]), int(req.height or frames.shape[1])
+        if (frames.shape[2], frames.shape[1]) != (tw, th):  # mimic SR: resize to target dims
+            frames = np.stack([np.asarray(Image.fromarray(frames[i]).resize((tw, th)), np.uint8)
+                               for i in range(frames.shape[0])])
+        frames = frames.copy()
         frames[..., 0] = np.clip(frames[..., 0].astype(int) + 50, 0, 255)  # tint to show the refine ran
         return frames
 

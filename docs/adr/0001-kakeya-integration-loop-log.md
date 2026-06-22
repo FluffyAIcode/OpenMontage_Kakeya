@@ -876,6 +876,52 @@ peer's **Tailscale IP** so it can't change on a future lease/reboot. Docs update
 
 ---
 
+## Iteration 33 — two-Mac proposer→refiner PIPELINE (head=proposer, headless=refine) — ADR 0014
+
+**Ask:** run the cluster as coarse-to-fine across the two Macs — head Mac = **proposer**
+(framework/T2V), headless Mac = **refiner** — not as two independent pool jobs.
+
+**Blocker (already documented):** stock `mlx-video` has **no vid2vid**, and the orchestrator's
+refine path was a 2×2 **tiled CUDA V2V** flow that doesn't fit a single headless Mac. The MLX
+worker's `refine` op hard-failed unless `MLX_V2V_FLAG` was set.
+
+**What we built (honest, works on stock mlx-video):**
+1. **MLX worker — functional `refine` without vid2vid** (`grpc_worker.py`). If `MLX_V2V_FLAG` is set
+   → generative V2V (unchanged). Otherwise → **spatial super-resolution refine**: Lanczos upscale to
+   `--out-width/--out-height` + unsharp mask (`MLX_SR_SHARPEN`, default 60). Pure PIL/numpy: OOM-safe,
+   no Metal, CI-testable. `health().note` advertises `refine=sr` vs `refine=v2v` so callers aren't
+   misled. **It raises resolution/crispness; it does NOT synthesize new detail** (that needs CUDA V2V).
+2. **Orchestrator — single-pass PIPELINE** (`grpc_orchestrator.py`). New `--single-refine`
+   (auto-on when the chosen refiner is MLX) + `--out-width/--out-height`. Proposer (low-res, head)
+   → temporal resample → **one full-frame** `RefineTile` on the refiner (headless) at the target
+   resolution → write. Picks a **distinct** proposer when possible so both Macs are used. Emits
+   `ORCH_DONE {"mode":"pipeline","proposer":A,"refiner":B,...}`. CUDA refiners still get the tiled path.
+3. **Gateway — PIPELINE mode** (`agent_gateway/server.py`). >1 worker + pool OFF ⇒ `PIPELINE_MODE`:
+   one job spans both Macs, gateway passes `--single-refine`. `/healthz` now reports
+   `{"mode":"pipeline|pool|single","pipeline_mode":bool}`. `refine:` progress parsed as the refine stage.
+4. **Deploy** — worker `--mlx-ops` is now a role (`framework`=proposer / `refine`=refiner): launchd
+   `mlxworker` plist `__MLX_OPS__` + `MLX_SR_SHARPEN`; gateway plist documents pipeline (default) vs
+   pool; `mac_all_in_one.sh` gains `MODE=pipeline|pool` + `MLX_OPS`; `two-mac-thunderbolt.md` rewritten
+   with the two-topology table and per-mode launch/verify.
+
+**Tests (offline, no GPU):** `tests/tools/test_distributed_wan_pipeline.py` — (a) `MlxBackend` SR
+refine upscales a tiny mp4 to the target res without vid2vid; (b) **end-to-end over real gRPC**: two
+in-process `TestBackend` workers (framework + refine) + `grpc_orchestrator --single-refine` produce an
+mp4 at the out-res with `mode=pipeline`, proposer=A, refiner=B. Plus a gateway pipeline-mode test
+(asserts `--single-refine`, both workers, no `--no-refine`). **10/10 pass** with the existing gateway
+suite.
+
+**Honest verdict:** this is a *real* two-Mac coarse-to-fine path (head drafts low-res fast, headless
+upscales/refines the whole clip), giving higher-res output than a single Mac's DIRECT draft — but the
+MLX refine is **interpolative SR, not generative**. For generative detail, attach a CUDA refiner (the
+orchestrator auto-promotes to the tiled V2V pipeline) or an mlx-video build with vid2vid (`MLX_V2V_FLAG`).
+
+**New issue I33:** the previous one-line manual run (`WAN_WORKERS=127.0.0.1:50051`) only listed the
+head, so the headless never got work — not a bug, a command-arg artifact. Pipeline mode makes the
+two-role split the gateway default so the headless is always engaged on each job.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

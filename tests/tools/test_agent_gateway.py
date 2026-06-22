@@ -29,9 +29,10 @@ def client(tmp_path, monkeypatch):
         "import argparse,json,pathlib\n"
         "ap=argparse.ArgumentParser()\n"
         "for a in ['--prompt','--out']: ap.add_argument(a)\n"
-        "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed']:\n"
+        "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height']:\n"
         "    ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
+        "ap.add_argument('--single-refine',action='store_true')\n"
         "x=ap.parse_args()\n"
         "print('[orch]   framework:    5%',flush=True)\n"
         "print('[orch]   framework:  100%',flush=True)\n"
@@ -114,14 +115,53 @@ def test_job_404(client):
     assert c.get("/v1/jobs/nope").status_code == 404
 
 
+def test_pipeline_mode_two_macs(tmp_path, monkeypatch):
+    """Two Macs, pool OFF -> pipeline mode: ONE job spans both workers with --single-refine
+    (head=proposer, headless=refine). Asserts the flag + both workers reach the orchestrator."""
+    fake = tmp_path / "fake_orch.py"
+    fake.write_text(
+        "import argparse,json,os,pathlib\n"
+        "ap=argparse.ArgumentParser()\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height']: ap.add_argument(a)\n"
+        "ap.add_argument('--no-refine',action='store_true')\n"
+        "ap.add_argument('--single-refine',action='store_true')\n"
+        "x=ap.parse_args()\n"
+        "assert x.single_refine, 'pipeline mode must pass --single-refine'\n"
+        "assert not x.no_refine, 'pipeline mode must NOT pass --no-refine'\n"
+        "assert ',' in os.environ.get('WAN_WORKERS',''), 'pipeline must receive ALL workers'\n"
+        "print('[orch]   framework:  100%',flush=True)\n"
+        "print('[orch]   refine:  100%',flush=True)\n"
+        "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'PIPEMP4')\n"
+        "print('ORCH_DONE '+json.dumps({'out':x.out,'mode':'pipeline'}),flush=True)\n"
+    )
+    monkeypatch.setenv("WAN_WORKERS", "10.0.0.1:50051,10.0.0.2:50051")
+    monkeypatch.delenv("AGENT_GATEWAY_WORKER_POOL", raising=False)
+    monkeypatch.setenv("AGENT_GATEWAY_JOBS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.delenv("AGENT_GATEWAY_API_KEY", raising=False)
+    sys.path.insert(0, str(REPO / "services" / "agent_gateway"))
+    import server
+    importlib.reload(server)
+    server.ORCH = fake
+    assert server.POOL_MODE is False and server.PIPELINE_MODE is True
+    c = TestClient(server.app)
+    h = c.get("/healthz").json()
+    assert h["mode"] == "pipeline" and h["pipeline_mode"] is True
+    jid = c.post("/v1/videos", json={"prompt": "fox pipeline"}).json()["job_id"]
+    j = _wait(c, jid)
+    assert j["status"] == "done", j
+    assert "refine" in "\n".join(j["log"])
+    assert c.get(f"/v1/jobs/{jid}/video").content == b"PIPEMP4"
+
+
 def test_pool_mode_two_macs(tmp_path, monkeypatch):
     """Two Thunderbolt-bridged Macs -> pool mode: 2 jobs run + complete in parallel."""
     fake = tmp_path / "fake_orch.py"
     fake.write_text(
         "import argparse,json,pathlib,time\n"
         "ap=argparse.ArgumentParser()\n"
-        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed']: ap.add_argument(a)\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
+        "ap.add_argument('--single-refine',action='store_true')\n"
         "x=ap.parse_args()\n"
         "assert x.no_refine, 'pool mode must pass --no-refine'\n"
         "print('[orch]   generate:  100%',flush=True); time.sleep(0.5)\n"

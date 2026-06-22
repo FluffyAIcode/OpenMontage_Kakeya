@@ -5,10 +5,12 @@ GPU"). Capability- and speed-aware:
 
   1. Health() every worker -> ops + relative_speed.
   2. framework on the fastest framework-capable worker (server-streamed progress).
-  3. upscale -> canvas -> native tile crops.
-  4. refine tiles, assigned SPEED-WEIGHTED across refine-capable workers, dispatched
-     concurrently (each a streamed RefineTile call).
-  5. weight-map (f_theta) merge -> final video.
+  3. then one of:
+     - DIRECT (--no-refine / no refine worker): write the proposer as-is (Mac-only draft).
+     - PIPELINE (--single-refine / MLX refiner): one full-frame refine on a single refiner
+       at the target out resolution (two-Mac head=proposer, headless=refine).
+     - TILED (CUDA refiner): upscale -> canvas -> native tile crops -> refine tiles
+       SPEED-WEIGHTED across refine workers concurrently -> f_theta weight-map merge.
 
 Optional Mac text plane (Kakeya MLX LLM) stays its own HTTP/OpenAI shim via
 KAKEYA_ENDPOINT (skip-not-fake) — unrelated to the gRPC worker contract.
@@ -119,6 +121,13 @@ def main():
     ap.add_argument("--no-refine", action="store_true",
                     help="single-worker DIRECT T2V (e.g. Mac-only): one generation at fw dims, "
                          "no tiled CUDA refine. Auto-enabled when no refine-capable worker exists.")
+    # Single-pass pipeline (proposer -> one refiner over the WHOLE clip). The two-Mac topology:
+    # head = framework/proposer (low-res), headless = refine (MLX SR upscale, or V2V if available).
+    ap.add_argument("--single-refine", action="store_true",
+                    help="one full-frame refine on a single refiner (e.g. headless Mac), instead "
+                         "of 2x2 tiled CUDA V2V. Auto-enabled when the chosen refiner is MLX.")
+    ap.add_argument("--out-width", type=int, default=WT, help="final width for --single-refine output")
+    ap.add_argument("--out-height", type=int, default=HT, help="final height for --single-refine output")
     ap.add_argument("--out", default="distributed_wan_grpc.mp4")
     args = ap.parse_args()
 
@@ -151,6 +160,44 @@ def main():
                                          "out": args.out, "gen_seconds": round(gs, 2),
                                          "px": [args.fw_height, args.fw_width],
                                          "frames": int(frames.shape[0])}), flush=True)
+        return
+
+    # SINGLE-PASS pipeline: proposer (low-res, head) -> one refiner over the WHOLE clip
+    # (headless Mac). mlx-video has no tiled V2V, so we send the whole resampled proposer to
+    # the refiner at the target output resolution instead of the 2x2 CUDA tile flow. The MLX
+    # refiner does a spatial-SR upscale (or generative V2V if its build supports it). Auto-on
+    # when the chosen refiner is an MLX worker; --single-refine forces it for any backend.
+    refiner = max(refine_workers, key=lambda w: w.speed)
+    if args.single_refine or refiner.backend.startswith("mlx"):
+        fw = max(fw_workers, key=lambda w: w.speed)
+        if fw.addr == refiner.addr and len(workers) > 1:
+            # prefer a DISTINCT proposer so both Macs are used (head proposes, headless refines)
+            others = [w for w in fw_workers if w.addr != refiner.addr]
+            if others:
+                fw = max(others, key=lambda w: w.speed)
+        print(f"[orch] PIPELINE proposer={fw.addr}({fw.backend})@{args.fw_width}x{args.fw_height}x{args.fw_frames}"
+              f" -> refiner={refiner.addr}({refiner.backend})@{args.out_width}x{args.out_height}", flush=True)
+        mp4, gs = _consume(fw.stub.GenerateFramework(pb.FrameworkRequest(
+            prompt=args.prompt, width=args.fw_width, height=args.fw_height,
+            num_frames=args.fw_frames, steps=args.proposer_steps, seed=args.seed)), "framework")
+        framework = _mp4_to_frames(mp4)
+        F = framework.shape[0]
+        t_idx = (np.round(np.linspace(0, F - 1, args.frames)).astype(int)
+                 if F != args.frames else np.arange(args.frames))
+        proposer = np.stack([framework[t_idx[i]] for i in range(args.frames)])
+        mp4b, rg = _consume(refiner.stub.RefineTile(pb.RefineRequest(
+            prompt=args.prompt, mp4=_frames_to_mp4_bytes(proposer),
+            width=args.out_width, height=args.out_height, num_frames=args.frames,
+            steps=args.refine_steps, strength=args.strength, seed=args.seed + 10)), "refine")
+        final = _mp4_to_frames(mp4b)
+        iio.mimwrite(args.out, [final[i] for i in range(final.shape[0])], format="mp4", fps=12, codec="libx264")
+        Image.fromarray(final[final.shape[0] // 2]).save(args.out.replace(".mp4", "_mid.png"))
+        import json
+        print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "pipeline",
+                                         "proposer": fw.addr, "refiner": refiner.addr, "out": args.out,
+                                         "proposer_seconds": round(gs, 2), "refine_seconds": round(rg, 2),
+                                         "px": [int(final.shape[1]), int(final.shape[2])],
+                                         "frames": int(final.shape[0])}), flush=True)
         return
 
     tiles = [(jy, jx) for jy in range(NY) for jx in range(NX)]

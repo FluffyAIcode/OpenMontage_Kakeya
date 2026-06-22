@@ -11,14 +11,28 @@ Two agents (Label → role):
 | Label | Where | Role |
 |---|---|---|
 | `ai.kakeya.mlxworker` | every Mac | MLX worker (`grpc_worker.py --backend mlx`) under `caffeinate` |
-| `ai.kakeya.gateway`   | head Mac only | agent gateway (`server.py :8088`), `round_robin` over all workers |
+| `ai.kakeya.gateway`   | head Mac only | agent gateway (`server.py :8088`) over all workers |
 
-The templates here use `__HOME__`, `__USER@HOST__` etc. — substitute per Mac. Live values used in
-this deployment:
+**Worker ROLE is set per Mac via `--mlx-ops` (`__MLX_OPS__` in the plist):**
 
-- **Head Mac** (`fluffy314`, has display): worker `--host 127.0.0.1`, gateway
-  `WAN_WORKERS=127.0.0.1:50051,169.254.27.104:50051`, `AGENT_GATEWAY_WORKER_MODE=round_robin`.
-- **Headless Mac** (`allen`, display/dummy-plug attached): worker `--host 169.254.27.104`.
+| Topology | Head Mac `--mlx-ops` | Headless Mac `--mlx-ops` | Gateway mode |
+|---|---|---|---|
+| **Pipeline** (head proposes, headless refines) | `framework` | `refine` | default (pool OFF) → `--single-refine` |
+| **Pool** (throughput, each Mac a full job) | `framework` | `framework` | `AGENT_GATEWAY_WORKER_POOL=1` |
+
+In **pipeline** mode the gateway runs ONE job across both Macs: the `framework` worker (head)
+makes a low-res proposer, the `refine` worker (headless) upscales/refines the whole clip in one
+pass (MLX SR by default — Lanczos+unsharp; generative V2V if `MLX_V2V_FLAG` is set). In **pool**
+mode every worker advertises `framework` and each job runs DIRECT on one Mac, N in parallel.
+
+The templates here use `__HOME__`, `__HOST__`, `__MLX_OPS__` etc. — substitute per Mac. Live values
+used in this deployment (pipeline topology):
+
+- **Head Mac** (`fluffy314`, has display) — PROPOSER: worker `--host 127.0.0.1 --mlx-ops framework`;
+  gateway `WAN_WORKERS=127.0.0.1:50051,192.168.68.51:50051` (pool OFF → pipeline).
+- **Headless Mac** (`allen`, dummy-plug attached) — REFINER: worker
+  `--host 0.0.0.0 --mlx-ops refine` (reach it at its stable LAN IP `192.168.68.51`, NOT a
+  `169.254.x` link-local — the head Mac has multiple such interfaces, see ADR 0001 Iteration 32).
 
 ## Install (per Mac)
 

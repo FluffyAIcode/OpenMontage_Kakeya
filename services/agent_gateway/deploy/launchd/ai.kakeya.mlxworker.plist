@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- MLX worker LaunchAgent template. Substitute __HOME__ (e.g. /Users/allen),
-     __HOST__ (127.0.0.1 on the head Mac, the Thunderbolt-bridge IP on a peer),
-     and __MODEL_DIR__ (e.g. __HOME__/wan21_mlx). Install to ~/Library/LaunchAgents/. -->
+     __HOST__ (127.0.0.1 on the head Mac, the LAN/Thunderbolt IP on a peer),
+     __MODEL_DIR__ (e.g. __HOME__/wan21_mlx), and __MLX_OPS__ = the worker's ROLE:
+       framework  -> proposer (head Mac, low-res T2V)
+       refine     -> refiner  (headless Mac; SR upscale, or V2V if MLX_V2V_FLAG set)
+       framework,refine -> both (single-Mac coarse-to-fine)
+     Install to ~/Library/LaunchAgents/. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -16,7 +20,7 @@
     <string>--host</string><string>__HOST__</string>
     <string>--port</string><string>50051</string>
     <string>--mlx-model-dir</string><string>__MODEL_DIR__</string>
-    <string>--mlx-ops</string><string>framework</string>
+    <string>--mlx-ops</string><string>__MLX_OPS__</string>
   </array>
   <key>WorkingDirectory</key><string>__HOME__/openmontage-mac/services/distributed_wan</string>
   <key>EnvironmentVariables</key>
@@ -24,6 +28,9 @@
     <key>PATH</key><string>__HOME__/.venv-distwan/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>MLX_TILING</key><string>aggressive</string>
     <key>MLX_RELATIVE_SPEED</key><string>0.12</string>
+    <!-- Refiner only: MLX_SR_SHARPEN sets the SR unsharp percent (0 disables). If your
+         mlx-video build has vid2vid, set MLX_V2V_FLAG (e.g. --video) for generative refine. -->
+    <key>MLX_SR_SHARPEN</key><string>60</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
