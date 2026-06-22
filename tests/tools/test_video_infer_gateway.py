@@ -114,6 +114,8 @@ def test_status_available_with_gateway_without_torch(monkeypatch):
 def test_status_unavailable_without_anything(monkeypatch):
     monkeypatch.delenv("VIDEO_INFER_ENDPOINT", raising=False)
     monkeypatch.delenv("VIDEO_GEN_LOCAL_ENABLED", raising=False)
+    monkeypatch.delenv("WAN_WORKERS", raising=False)  # distributed-WAN backend (ADR 0013)
+    monkeypatch.delenv("VAST_REFINE_WORKER", raising=False)
     assert _shared.local_generation_status() == ToolStatus.UNAVAILABLE
 
 
@@ -233,6 +235,8 @@ def test_i2v_unsupported_variant(gateway, tmp_path):
 def test_generate_local_video_routes_to_gateway(gateway, tmp_path, monkeypatch):
     base, handler = gateway
     handler.mode = "bytes"
+    monkeypatch.delenv("WAN_WORKERS", raising=False)  # ensure the HTTP gateway seam wins here
+    monkeypatch.delenv("VAST_REFINE_WORKER", raising=False)
     monkeypatch.setenv("VIDEO_INFER_ENDPOINT", base)
     # Note: torch/diffusers are NOT installed here. If routing failed and fell
     # through to the in-process path, this would ImportError. Success proves the

@@ -1,0 +1,17 @@
+# Cloudflare Tunnel config for the OpenMontage Agent Gateway at kakeya.ai.
+# Used by Option B (CLI named tunnel) in deploy/cloudflare.md.
+#   cloudflared tunnel --config this-file run kakeya-gw
+# Fill in the UUID from `cloudflared tunnel create kakeya-gw` / `cloudflared tunnel list`.
+tunnel: <TUNNEL_UUID>
+credentials-file: /root/.cloudflared/<TUNNEL_UUID>.json
+
+ingress:
+  # apex -> the gateway listening on localhost
+  - hostname: kakeya.ai
+    service: http://localhost:8088
+  - hostname: www.kakeya.ai
+    service: http://localhost:8088
+  # everything else: 404
+  - service: http_status:404
+
+# Long renders are async (poll for the job), so no special timeouts are required.

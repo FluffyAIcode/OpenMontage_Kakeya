@@ -59,7 +59,8 @@ if [ "$STEP" = "all" ] || [ "$STEP" = "setup" ]; then
   python -m pip install -U pip
   # mlx-video pulls mlx; the rest are the worker's needs. (imageio-ffmpeg bundles ffmpeg.)
   python -m pip install -U mlx mlx-video grpcio grpcio-tools \
-      imageio imageio-ffmpeg numpy pillow huggingface_hub
+      imageio imageio-ffmpeg numpy pillow huggingface_hub \
+      "fastapi>=0.110" "uvicorn[standard]>=0.29" "pydantic>=2.6"  # gateway (all-in-one on Mac)
 else
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"

@@ -585,6 +585,442 @@ throughput win. For raw speed, co-locate CUDA workers (ADR 0006 §5).
 
 ---
 
+## Iteration 21 — public agent video service via a domain (ADR 0011, kekaye.ai)
+
+**Trigger:** "continue integrating OpenMontage so the agent video service is usable directly via
+the kekaye.ai domain."
+
+**Built:** `services/agent_gateway/` — a FastAPI **front door** (REST + minimal web UI) that turns
+a request into a video by driving the validated distributed-WAN cluster, and the domain/TLS
+deployment config (`deploy/Caddyfile`, `deploy/agent-gateway.service`, Tailscale-Funnel path).
+
+**Architecture honored:** the gateway is a **transport + job layer only** — no creative/pipeline
+logic in Python (Rule Zero). `mode="video"` shells out to `grpc_orchestrator.py` (capability call);
+`mode="agent"` enqueues for an external agent runtime (`AGENT_RUNTIME_CMD`) and never fakes creative
+decisions. Endpoints: `/`, `/healthz`, `/v1/capabilities`, `POST /v1/videos`, `GET /v1/jobs/{id}`,
+`GET /v1/jobs/{id}/video`. Optional `X-API-Key` auth.
+
+**Tested:** 6 offline tests (`tests/tools/test_agent_gateway.py`) using a fake orchestrator that
+emits the real progress/`ORCH_DONE` protocol — full submit→run→poll→download lifecycle, auth gate,
+honest agent-mode-without-runtime, 404s. All pass.
+
+**Live-verified:** deployed on the vast H200, submitted `POST /v1/videos` (sea-turtle prompt) with
+`X-API-Key`, the gateway drove the Mac+vast cluster, and `GET /v1/jobs/{id}/video` returned a real
+h264 1472×768×25 mp4 (`docs/adr/tier01_evidence/gateway_demo.{mp4,_mid.png}`).
+
+**Owner-dependent (cannot be done by the cloud agent):** pointing `kekaye.ai` DNS at a host, or
+enabling Tailscale Funnel/HTTPS (admin) for the zero-DNS `*.ts.net` public URL. `tailscale serve`
+hung waiting on tailnet HTTPS provisioning — that's an admin toggle, not a code issue.
+
+---
+
+## Iteration 22 — Mac-only pivot: DIRECT no-refine mode + all-on-Mac service (vast shut down)
+
+**Trigger:** owner shut down vast and asked to prioritize the Mac mini GPU for connectivity +
+OpenMontage integration testing.
+
+**Reality check:** with vast down, the cloud-agent VM lost its only path to the Mac (it relayed
+through vast's SOCKS5 forwarder; this VM has no TUN/tailnet of its own). So the durable answer is
+**all-on-Mac**: the Mac is both the GPU and the control host.
+
+**Built:**
+- `grpc_orchestrator.py` **DIRECT (no-refine) mode** — auto-enabled when no refine-capable worker
+  exists (Mac MLX is framework-only). One MLX T2V generation at fw dims, no tiled CUDA refine, so
+  the gateway still produces video with just the Mac. Explicit `--no-refine` too.
+- `deploy/mac_all_in_one.sh` + `deploy/mac-all-in-one.md` — turnkey: MLX worker + agent_gateway
+  (:8088) + cloudflared → kakeya.ai, all on the Mac over localhost. mac_setup.sh now also installs
+  fastapi/uvicorn.
+
+**Honest:** the cloud agent cannot shell into the Mac, and vast (its relay) is down, so this
+iteration is code + a runbook the owner runs on the Mac. Output in Mac-only mode is a low-res
+T2V clip (memory-bounded); adding a CUDA refine worker re-enables the high-res refined pipeline
+with no gateway change. Gateway tests (6) still pass; orchestrator compiles.
+
+---
+
+## Iteration 23 — two Mac minis over Thunderbolt: gateway worker-POOL (2× throughput)
+
+**Trigger:** owner bridged two Mac minis over Thunderbolt (~536 G combined) and asked to
+re-architect the video agent for it.
+
+**Grounded finding (checked the package source):** `mlx-video` has **no** distributed/tensor-
+parallel support (no `mlx.distributed`/`mlx.launch`/collectives) and **no vid2vid**. So:
+- a single WAN generation can't be sharded across the two Macs — the combined memory is **not**
+  one pool for one generation (each gen is bounded by one Mac);
+- the high-res proposer→tiled-refine pipeline still needs a CUDA refiner.
+
+**Built — the honest win is throughput:** gateway **POOL mode** (`AGENT_GATEWAY_WORKER_POOL=1`):
+each `WAN_WORKERS` entry is an independent GPU; a `queue` hands each job one free Mac (DIRECT
+no-refine), N jobs run in parallel = N× throughput, with backpressure when all Macs are busy.
+- `server.py`: pool queue + per-worker dispatch + `--no-refine`; `/healthz` reports
+  `pool_mode`/`parallel`.
+- `mac_all_in_one.sh`: `PEERS="<macB-bridge-ip>:50051"` → head Mac runs gateway in pool mode.
+- `two-mac-thunderbolt.md`: bridge IPs, per-Mac worker, head gateway + cloudflared, verify 2×.
+- 7 gateway tests pass (added a two-Mac pool test).
+
+**Honest:** still owner-run (no cloud-agent path to the Macs after vast shutdown). Output remains
+Mac-grade DIRECT T2V; adding a CUDA refiner re-enables high-res refine with no code change.
+
+---
+
+## Iteration 24 — re-anchor to the agent: WAN cluster = registered provider tool (ADR 0012/0013)
+
+**Trigger:** owner accepted the architecture review and directed: localize OpenMontage + expose via
+Cloudflare; no co-located CUDA (on-demand vast for refine); re-evaluate the 512 G Mac's high-res
+ceiling; harden before public; collapse the two video backends.
+
+**Keystone shipped — re-anchor + collapse:** the distributed-WAN cluster is now a third transport
+behind the existing `generate_local_video()` seam, so `wan_video` (already
+`capability="video_generation"`, discoverable by `video_selector`, usable by every pipeline) routes
+to the **local Mac cluster** — the agent uses it like any provider. One unified local-video
+abstraction (distributed gRPC | warm HTTP gateway | in-process diffusers), not parallel stacks.
+- `WAN_WORKERS` → Mac-only DIRECT no-refine T2V at requested W×H.
+- `VAST_REFINE_WORKER` (optional) → appends an **on-demand** vast CUDA worker → proposer+refine.
+- `local_generation_status()` AVAILABLE when `WAN_WORKERS` set. Tests:
+  `tests/tools/test_local_wan_provider.py` (3) + gateway (7) = 10 pass.
+
+**Mac high-res re-evaluation (ADR 0012):** the earlier "low-res only" was a *small-Mac* OOM
+artifact. A ~512 G Apple-Silicon box (M3 Ultra 512 G / 819 GB/s) **removes the memory ceiling** —
+WAN 14B @ 720p fits easily. The real limit is **GPU time** (e.g. WAN 480p 5 s ≈ 11 min on M3 Ultra
+vs ~2–3 min on a 4090/H200). Few-step LoRA brings 14B/720p to a few minutes (async-friendly).
+Verdict: **the 512 G Mac IS high-res capable** (latency-bound, not memory-bound); attach vast for
+*speed*, not to *enable* resolution.
+
+**Honest:** still owner-run on the Mac (no cloud-agent path to the Macs; vast off). Remaining
+sequenced work in ADR 0013 §5: gateway `mode=agent` runtime, hardening (durable jobs/supervision/
+rate-limit/per-key auth), parameterize the refine canvas, benchmark the real box.
+
+---
+
+## Iteration 25 — link check + relay moved to the Mac (subdomain on Cloudflare)
+
+**Link test (`检测链接`):** `kakeya.ai` resolves to Cloudflare (`172.67.167.146`) and returns
+HTTP 200, but it **serves an unrelated "AgentMate" site**, not our gateway (`/healthz` returns that
+HTML, not JSON). No `agent/video/api/...` subdomain exists. **Verdict: the OpenMontage link is NOT
+wired** — the apex is taken by another app.
+
+**Decision (owner):** the **relay lives on the Mac mini**, not on a GPU. The Mac cluster is the
+always-on entry (cloudflared) + proposer/refiner; vast is an on-demand refiner only. This removes
+the prior "can't reach the cluster because vast is off" failure mode.
+
+**Done:** updated all deploy docs to (a) run `cloudflared` (the relay) on the **Mac**, and (b)
+expose the agent on a **subdomain `agent.kakeya.ai`** so it coexists with the existing apex site —
+`cloudflare.md`, `mac-all-in-one.md`, `two-mac-thunderbolt.md`, `mac_all_in_one.sh`.
+
+**To go live (owner, on the Mac):** run the gateway (`mac_all_in_one.sh`) + a Cloudflare Tunnel
+with public hostname `agent.kakeya.ai → http://localhost:8088`. Then `https://agent.kakeya.ai/healthz`
+returns JSON and I can verify end-to-end.
+
+---
+
+## Iteration 26 — render test PASSED on the Mac MLX GPU (cloud agent drove it via SSH-over-Cloudflare)
+
+**Access:** owner exposed `ssh.kakeya.ai → Cloudflare Tunnel → Mac:22` and authorized the cloud
+agent's key. The agent now SSHes in via `cloudflared access ssh` (config `Host mac`) and drives
+everything itself — no more human copy-paste.
+
+**Mac facts:** head Mac has a **display** (3440×1440), runs the MLX worker on `127.0.0.1:50051`
+under `caffeinate -dimsu MLX_TILING=aggressive`; headless peer is `169.254.27.104:50051`.
+
+**Two real clips rendered (agent-driven, verified):**
+1. **Direct orchestrator** → display worker, DIRECT no-refine `480×256` → `(16,256,480)` in **104 s**,
+   real h264 fox-in-snow (`tier01_evidence/mac_render_proof.{mp4,_mid.png}`). No watchdog timeout
+   (display + tiling + caffeinate).
+2. **Through the gateway** (`POST /v1/videos` → job `e7fe26437000` → `done`), downloaded via
+   `/v1/jobs/{id}/video` → real h264 otter-in-kelp (`tier01_evidence/gateway_render_proof.{mp4,_mid.png}`).
+   Proves gateway → orchestrator → MLX worker → served mp4.
+
+**Open issues (owner-side, not integration):**
+- **Public `agent.kakeya.ai` DNS/route flapping:** it resolved + returned `healthz 200` earlier
+  this session, then stopped resolving entirely — the Cloudflare DNS record/tunnel public-hostname
+  for the subdomain needs restoring. The gateway + tunnel connector are healthy locally.
+- **Headless peer watchdog:** round-robin still sends ~half of jobs to `169.254.27.104`, which trips
+  `kIOGPUCommandBufferCallbackErrorTimeout`. Drop it from `WAN_WORKERS` (route to the display Mac)
+  or add an HDMI dummy plug to bring it back reliably.
+
+---
+
+## Iteration 27 — PUBLIC path proven end-to-end at agent.kakeya.ai ✅
+
+**Root cause of the earlier outage (resolved):** the Mac's `cloudflared` was authenticated to a
+different Cloudflare account/zone (`agentmate.build`), so `cloudflared tunnel route dns kakeya-gw …`
+wrote junk records `agent.kakeya.ai.agentmate.build` against the wrong tunnel (`aeb49800…`).
+`agent.kakeya.ai` / `ssh.kakeya.ai` never existed in the real `kakeya.ai` zone (NXDOMAIN). Fix:
+re-auth to the `kakeya.ai` account and route by the GATEWAY tunnel **ID**:
+`cloudflared tunnel route dns 99e33427-bf06-4c63-8678-8ee37bfc3921 agent.kakeya.ai` (+ `ssh`).
+
+**Public proof (agent-driven):** from the cloud-agent VM, `https://agent.kakeya.ai/healthz`
+returns the gateway JSON; `POST /v1/videos` (Cloudflare round-trip) → job `fe99ecd5d15d` → `done`
+→ downloaded `/v1/jobs/{id}/video` = real h264 480×256×16 otter clip
+(`tier01_evidence/public_render_proof.{mp4,_mid.png}`). Full chain verified:
+**VM → Cloudflare → kakeya-gw tunnel → gateway → orchestrator → Mac MLX GPU → mp4 → back to VM.**
+
+**Notes:** the cloud-agent VM's stub resolver (`10.0.0.2`) cached the old NXDOMAIN; worked around
+by pinning the CF edge IP in `/etc/hosts` (VM-local, not repo). SSH-over-Cloudflare (`ssh.kakeya.ai`)
+also restored. Headless peer (`169.254.27.104`) still trips the GPU watchdog on ~half of round-robin
+jobs — drop it from `WAN_WORKERS` or add an HDMI dummy plug for reliable 2-worker serving.
+
+---
+
+## Iteration 28 — public demo opened (no key) + routed to the display Mac
+
+**Trigger:** the web UI returned `401 missing or invalid X-API-Key` (the "API key" field was empty);
+owner asked to open the demo.
+
+**Done (agent-driven via SSH):** relaunched the Mac gateway with **no `AGENT_GATEWAY_API_KEY`**
+(auth off) and **`WAN_WORKERS=127.0.0.1:50051`** (display Mac only, so the open demo never lands on
+the headless peer's GPU watchdog). Verified end-to-end from the cloud VM with **no key**:
+`POST /v1/videos {fox prompt}` → job `49d70fc2ce6e` → `done` → downloaded real h264 480×256×16 fox
+clip (`tier01_evidence/public_open_demo.{mp4,_mid.png}`). The web UI now works with the key field
+empty.
+
+**Security note:** the public endpoint now accepts unauthenticated renders — fine for a watched
+demo, but anyone can spend Mac GPU time. Recommend a Cloudflare WAF/rate-limit rule on
+`POST /v1/videos` (owner dashboard) and re-enabling `AGENT_GATEWAY_API_KEY` after the demo. The
+gateway runs via `nohup` (not launchd) — it won't auto-restart on reboot; durable supervision is
+the ADR 0013 §5 hardening follow-up.
+
+---
+
+## Iteration 29 — BOTH Mac GPUs utilized in parallel over Thunderbolt ✅
+
+**Headless Mac fixed:** the second Mac (`allen@Allens-Mac-mini`, `169.254.27.104`) now reports a
+**display Online (2180×1200)** — a monitor/dummy plug is attached, which relaxes the macOS GPU
+watchdog. A direct test render on its GPU completed cleanly (`ORCH_DONE`, 117 s, real h264 clip,
+no `kIOGPUCommandBufferCallbackErrorTimeout`). So both Mac GPUs render.
+
+**Topology clarified:** head Mac `fluffy314@fluffy314s-Mac-mini` (`169.254.187.239`, display, gateway
++ cloudflared); headless Mac `allen@Allens-Mac-mini` (`169.254.27.104`, display now attached). The
+Thunderbolt bridge is a fast LAN link, not GPU pooling (mlx-video has no sharding) — "both GPUs" =
+one MLX worker per Mac + the gateway distributing jobs.
+
+**Both GPUs in parallel (verified):** the mac-bridge gateway variant uses
+`AGENT_GATEWAY_WORKER_MODE` (`cluster`=distributed/serialized, `round_robin`=one job per worker,
+N parallel). Relaunched with `WORKER_MODE=round_robin` + both workers → `max_video_jobs=2`. Two
+public jobs submitted back-to-back (deer + whale) were **both `running` simultaneously** (one per
+Mac) and **both finished** as real h264 480×256×16 clips
+(`tier01_evidence/dualgpu_{deer,whale}.mp4`, `dualgpu_whale_mid.png`, `headless_gpu_proof.mp4`).
+
+**State:** `agent.kakeya.ai` open demo now load-balances across **both Mac mini GPUs** in parallel
+(2× throughput). Access to the headless Mac is via head Mac → `ssh allen@169.254.27.104` (key
+trust established).
+
+---
+
+## Iteration 30 — launchd auto-start (cluster survives crashes/reboots)
+
+**Done (agent-driven via SSH):** installed per-user **LaunchAgents** (not LaunchDaemons — they run
+in the GUI/Aqua session so the GPU watchdog stays relaxed) with `RunAtLoad` + `KeepAlive`:
+- Head Mac (`fluffy314`): `ai.kakeya.mlxworker` (`127.0.0.1:50051`, under `caffeinate`,
+  `MLX_TILING=aggressive`) + `ai.kakeya.gateway` (`:8088`, `WORKER_MODE=round_robin`, both workers).
+- Headless Mac (`allen`): `ai.kakeya.mlxworker` (`169.254.27.104:50051`).
+All `state=running` via `launchctl print gui/501/…`; PATH is venv-first so the `mlx_video` subprocess
+resolves. Verified end-to-end: a public job (`d588c5fe44e3`) ran on the launchd-managed cluster →
+`done`.
+
+**Artifacts:** `services/agent_gateway/deploy/launchd/` (README + templated
+`ai.kakeya.{mlxworker,gateway}.plist`).
+
+**Reboot caveat (documented):** LaunchAgents start at **user login**, so unattended reboot recovery
+also needs **auto-login** enabled, and **FileVault** (if on) blocks unattended pre-boot unlock. Crash
+recovery (`KeepAlive`) works regardless. `cloudflared` should also be made a service
+(`sudo cloudflared service install <token>`) for full reboot durability.
+
+---
+
+## Iteration 31 — tunnel outage + recovery; rotation-resilient cloudflared LaunchAgent
+
+**What broke (my mistakes, documented honestly):**
+1. The first cloudflared LaunchAgent used `cloudflared tunnel run --token` and a hard-coded token;
+   retiring the live `--url` connector left it unable to serve. The self-healing fallback relied on
+   `setsid`, which **macOS lacks**, so it didn't fire → tunnel down, SSH lost.
+2. While recovering, multiple connectors ran at once → `control stream … failure` churn.
+3. The decisive cause: the owner had **rotated the tunnel token**, so every connector using the old
+   (plist) token was rejected. Cloudflare's UI does not display the token after a rotate.
+
+**Recovery (owner-run, since SSH was down):** `cloudflared tunnel token <UUID>` fetches the CURRENT
+token from the CLI (no dashboard needed). Running a single `cloudflared tunnel --url
+http://localhost:8088 run --token "$TOKEN"` registered 4/4 connections → tunnel `Healthy`, SSH +
+`agent.kakeya.ai` back.
+
+**Durable + rotation-resilient fix:** `deploy/launchd/run_cloudflared.sh` (wrapper that fetches the
+token via `cloudflared tunnel token <UUID>` at startup) + `ai.kakeya.cloudflared.plist`
+(RunAtLoad/KeepAlive). Installed live (connector pid healthy, 4/4 registered), foreground
+connectors retired → exactly one durable connector. So auto-start survives reboots AND future token
+rotations (as long as `cert.pem` stays valid).
+
+**Lessons:** never hard-code a Cloudflare tunnel token in auto-start; never run >1 connector per
+tunnel; macOS has no `setsid`; the tunnel carries the cloud agent's only SSH path, so changes to it
+must be done with a self-healing/he-can-recover-it plan. Compute (workers/gateway/FileVault/
+auto-login) was unaffected throughout.
+
+---
+
+## Iteration 32 — UI job failures: headless worker unreachable via link-local; fixed via LAN IP
+
+**Symptom:** UI renders intermittently failed — `orchestrator exited rc=1`,
+`No route to host ipv4:169.254.27.104:50051`. Round-robin sent ~half the jobs to the headless
+worker, addressed by its **Thunderbolt link-local** IP.
+
+**Cause:** the head Mac has `169.254.x` on multiple interfaces (`bridge0` + `en9`), so the route to
+the peer's `169.254.27.104` was ambiguous → "No route to host". (The headless worker was up and
+bound; the head just couldn't route to that link-local addr.)
+
+**Fix:** rebind the headless worker to **`--host 0.0.0.0`** and point the gateway at the peer's
+**stable LAN IP** `192.168.68.51:50051` (gRPC can't resolve `.local` mDNS). Verified: two public
+jobs ran in parallel (head + headless) and both completed. `agent.kakeya.ai` healthy again.
+
+**Durability note:** `192.168.68.51` is DHCP — set a **DHCP reservation** (router) or use the
+peer's **Tailscale IP** so it can't change on a future lease/reboot. Docs updated
+(`deploy/two-mac-thunderbolt.md`): never address a peer by `169.254.x`.
+
+---
+
+## Iteration 33 — two-Mac proposer→refiner PIPELINE (head=proposer, headless=refine) — ADR 0014
+
+**Ask:** run the cluster as coarse-to-fine across the two Macs — head Mac = **proposer**
+(framework/T2V), headless Mac = **refiner** — not as two independent pool jobs.
+
+**Blocker (already documented):** stock `mlx-video` has **no vid2vid**, and the orchestrator's
+refine path was a 2×2 **tiled CUDA V2V** flow that doesn't fit a single headless Mac. The MLX
+worker's `refine` op hard-failed unless `MLX_V2V_FLAG` was set.
+
+**What we built (honest, works on stock mlx-video):**
+1. **MLX worker — functional `refine` without vid2vid** (`grpc_worker.py`). If `MLX_V2V_FLAG` is set
+   → generative V2V (unchanged). Otherwise → **spatial super-resolution refine**: Lanczos upscale to
+   `--out-width/--out-height` + unsharp mask (`MLX_SR_SHARPEN`, default 60). Pure PIL/numpy: OOM-safe,
+   no Metal, CI-testable. `health().note` advertises `refine=sr` vs `refine=v2v` so callers aren't
+   misled. **It raises resolution/crispness; it does NOT synthesize new detail** (that needs CUDA V2V).
+2. **Orchestrator — single-pass PIPELINE** (`grpc_orchestrator.py`). New `--single-refine`
+   (auto-on when the chosen refiner is MLX) + `--out-width/--out-height`. Proposer (low-res, head)
+   → temporal resample → **one full-frame** `RefineTile` on the refiner (headless) at the target
+   resolution → write. Picks a **distinct** proposer when possible so both Macs are used. Emits
+   `ORCH_DONE {"mode":"pipeline","proposer":A,"refiner":B,...}`. CUDA refiners still get the tiled path.
+3. **Gateway — PIPELINE mode** (`agent_gateway/server.py`). >1 worker + pool OFF ⇒ `PIPELINE_MODE`:
+   one job spans both Macs, gateway passes `--single-refine`. `/healthz` now reports
+   `{"mode":"pipeline|pool|single","pipeline_mode":bool}`. `refine:` progress parsed as the refine stage.
+4. **Deploy** — worker `--mlx-ops` is now a role (`framework`=proposer / `refine`=refiner): launchd
+   `mlxworker` plist `__MLX_OPS__` + `MLX_SR_SHARPEN`; gateway plist documents pipeline (default) vs
+   pool; `mac_all_in_one.sh` gains `MODE=pipeline|pool` + `MLX_OPS`; `two-mac-thunderbolt.md` rewritten
+   with the two-topology table and per-mode launch/verify.
+
+**Tests (offline, no GPU):** `tests/tools/test_distributed_wan_pipeline.py` — (a) `MlxBackend` SR
+refine upscales a tiny mp4 to the target res without vid2vid; (b) **end-to-end over real gRPC**: two
+in-process `TestBackend` workers (framework + refine) + `grpc_orchestrator --single-refine` produce an
+mp4 at the out-res with `mode=pipeline`, proposer=A, refiner=B. Plus a gateway pipeline-mode test
+(asserts `--single-refine`, both workers, no `--no-refine`). **10/10 pass** with the existing gateway
+suite.
+
+**Honest verdict:** this is a *real* two-Mac coarse-to-fine path (head drafts low-res fast, headless
+upscales/refines the whole clip), giving higher-res output than a single Mac's DIRECT draft — but the
+MLX refine is **interpolative SR, not generative**. For generative detail, attach a CUDA refiner (the
+orchestrator auto-promotes to the tiled V2V pipeline) or an mlx-video build with vid2vid (`MLX_V2V_FLAG`).
+
+**New issue I33:** the previous one-line manual run (`WAN_WORKERS=127.0.0.1:50051`) only listed the
+head, so the headless never got work — not a bug, a command-arg artifact. Pipeline mode makes the
+two-role split the gateway default so the headless is always engaged on each job.
+
+**Live verification (this iteration):** head Mac repo moved to this branch; Mac B's `grpc_worker.py`
+updated (scp from head — Mac B's `git fetch` hangs on a GitHub HTTPS credential prompt) and its
+launchd refiner restarted; head worker+gateway reloaded. Public job through `agent.kakeya.ai`:
+`ORCH_DONE mode=pipeline proposer=127.0.0.1:50051 refiner=192.168.68.51:50051 px=[480,832] frames=25
+proposer=105.7s refine=0.36s`; downloaded clip = h264 832×480 25f. The **headless Mac did the
+refine** (refine≈0.36 s confirms the SR path). ✅
+
+---
+
+## Iteration 34 — 3-node: head=proposer, headless(MLX)+vast(CUDA)=refiners (gateway mode selector)
+
+**Ask:** add a vast CUDA box so the cluster runs head Mac = proposer, **and BOTH** the headless Mac
+(MLX SR refine) **and** vast (CUDA generative refine) as refiners.
+
+**Code gap found:** the gateway *forced* `--single-refine` in the 2-Mac case, which picks only ONE
+(fastest) refiner — with vast present that would idle the headless Mac. Fixed by replacing the
+binary pool/pipeline switch with an explicit **`AGENT_GATEWAY_MODE`**:
+- `auto` (default): pass ALL workers, no flag → orchestrator auto-picks single-pass (MLX refiner)
+  vs **tiled** (CUDA refiner). 2-Mac → single on the Mac; 3-node → tiled across both refiners.
+- `distributed`: tiled + **`--refine-spread roundrobin`** so EVERY refiner (incl. the slow MLX Mac)
+  gets a share of tiles instead of being optimized out by speed-weighting.
+- `pipeline`: force `--single-refine` (head + one refiner). `pool`: per-worker DIRECT (throughput).
+- back-compat: `AGENT_GATEWAY_WORKER_POOL=1` ⇒ `pool`. `/healthz` reports the resolved `mode`.
+
+**Orchestrator:** new `--refine-spread {weighted,roundrobin}`. In the tiled path, `roundrobin` deals
+tiles fastest-first in turn so the MLX Mac contributes (2 tiles MLX-SR / 2 tiles CUDA-V2V on a
+4-tile, 2-refiner job) rather than vast taking all 4 (an 8× speed gap zeroes the Mac under
+`weighted`). Tile→worker log now prints `addr(backend)`.
+
+**Vast refiner bringup:** `services/distributed_wan/vast_refiner_setup.sh` — installs gRPC+diffusers,
+launches `grpc_worker --backend cuda --ops refine --preload` (refine-only so the head stays the sole
+proposer), and documents reachability (head→vast SSH `-L 50052:localhost:50051` tunnel / Tailscale /
+mapped port).
+
+**Honesty:** with a fast CUDA refiner present, `weighted` would (correctly, for wall-time) route all
+tiles to vast and idle the Mac; `distributed`/`roundrobin` is the explicit "use all three" mode at
+some wall-time cost. MLX tiles are SR (interpolative); vast tiles are generative — blended by the
+f_θ weight-map merge. **Tests:** gateway mode resolution (auto/pipeline/distributed/pool) +
+orchestrator pipeline; 12/12 pass.
+
+**Networking note:** the fresh vast box rejected both the cloud-agent and head keys at first
+(`Permission denied (publickey)`). Resolved using the cloud-agent's own `~/.ssh/vast_key` (env
+secret) to reach vast, then authorizing the head Mac's pubkey there. One gotcha: appending the head
+key with `echo >>` onto a no-trailing-newline `authorized_keys` **merged** it into the existing
+line (head key became a comment → still denied); fixed by rewriting `authorized_keys` with both keys
+on separate lines.
+
+**Live verification (3-node) ✅** — vast H200 (143 G): installed torch 2.12 + diffusers 0.38 +
+**protobuf** + **ftfy** (WAN text-encoder needs ftfy; first refine RPC failed `NameError: ftfy`),
+ran `grpc_worker --backend cuda --ops refine --preload` in tmux. Head→vast reachability = an SSH
+local-forward `127.0.0.1:50052 -> vast:50051` from the head. Gateway set
+`WAN_WORKERS=127.0.0.1:50051,192.168.68.51:50051,127.0.0.1:50052` + `AGENT_GATEWAY_MODE=distributed`.
+Public job → `agent.kakeya.ai`:
+
+```
+[orch] tile (0,0) <- 127.0.0.1:50052 (7.0s)    vast   (CUDA generative V2V)
+[orch] tile (0,1) <- 192.168.68.51:50051 (0.2s) Mac B  (MLX SR)
+[orch] tile (1,0) <- 127.0.0.1:50052 (11.6s)   vast
+[orch] tile (1,1) <- 192.168.68.51:50051 (0.2s) Mac B
+ORCH_DONE refine_wall_s=14.25 canvas_px=[768,1472]
+```
+
+Downloaded clip = **h264 1472×768 25f** — head proposed, **both** Mac B and vast refined
+(round-robin), higher-res than the 2-Mac pipeline's 832×480. ✅
+
+**Durability TODO (this topology):** the vast worker runs in `tmux` (survives SSH disconnect, not a
+vast reboot) and the head→vast tunnel is a `-fN` ssh (not auto-restarting). For a standing 3-node
+service, wrap the vast worker (systemd/tmux-resurrect) and the tunnel (autossh / launchd on the head)
+before relying on it unattended.
+
+---
+
+## Iteration 35 — ephemeral-vast durability: auto-recover refiner; 2-Mac fallback (no restart)
+
+**Ask:** vast GPUs are released/recreated often — guarantee the cluster auto-recovers the vast
+refiner after every recreate, and keeps producing video (head proposer + f_θ) while vast is gone.
+
+**Built (3 parts, no gateway restarts):**
+1. **Dynamic membership** — gateway `AGENT_GATEWAY_WORKERS_FILE`: the worker list is re-read from a
+   file **per job + healthz**, so a refiner can be added/removed live. Falls back to `WAN_WORKERS`.
+2. **Head supervisor** (`vast_refiner_supervisor.sh`, launchd KeepAlive): each cycle — if vast is
+   reachable, scp worker files + run idempotent `vast_bootstrap.sh` (install deps incl. protobuf/ftfy,
+   launch cuda refine-only in tmux), (re)open the `ssh -L 50052→vast:50051` tunnel, and write
+   `BASE_WORKERS,127.0.0.1:50052` → **3-node**; if vast is unreachable or still loading, write
+   `BASE_WORKERS` → **2-Mac fallback** (head proposer + headless SR via f_θ).
+3. **Idempotent vast bootstrap** so a FRESH box self-converges to a running refiner.
+
+**Live proof (full release→recreate cycle):**
+```
+22:51 vast refiner ONLINE -> 3-node (added 127.0.0.1:50052)     healthz workers=[head,MacB,vast]
+22:52 vast 104.202.252.41:29999 unreachable -> 2-Mac fallback   healthz workers=[head,MacB]
+22:53 [bootstrap] worker already listening; vast refiner ONLINE -> 3-node   healthz workers=[head,MacB,vast]
+```
+Membership flipped 3-node ↔ 2-Mac with **no gateway restart** (dynamic file). Deployed on the head as
+`ai.kakeya.vastsupervisor` (launchd) + gateway switched to the dynamic file. Runbook:
+`deploy/ephemeral-vast-refiner.md`. **After a recreate, only the SSH endpoint changes** — edit
+`~/.kakeya/vast.env` (or set `VAST_RESOLVE_CMD` for zero-touch); the supervisor does the rest.
+**Test:** dynamic workers-file membership (3-node↔2-Mac, no restart); 13/13 pass.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

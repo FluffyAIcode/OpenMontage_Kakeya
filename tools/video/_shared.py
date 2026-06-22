@@ -151,16 +151,41 @@ def local_generation_enabled() -> bool:
     return os.environ.get("VIDEO_GEN_LOCAL_ENABLED", "").lower() in {"true", "1", "yes"}
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def distributed_wan_workers() -> list[str]:
+    """The local-video cluster the agent's provider tool dispatches to (ADR 0013).
+
+    Base workers (the always-local Mac MLX node(s)) come from WAN_WORKERS. An optional,
+    ON-DEMAND vast CUDA refine worker is appended from VAST_REFINE_WORKER — attach it only
+    when a high-res refine pass is wanted, detach it the rest of the time (right-sizing per
+    the owner's feedback: no co-located CUDA; temporary vast for refine)."""
+    workers = [w.strip() for w in os.environ.get("WAN_WORKERS", "").split(",") if w.strip()]
+    vast = os.environ.get("VAST_REFINE_WORKER", "").strip()
+    if vast and vast not in workers:
+        workers.append(vast)
+    return workers
+
+
+def distributed_wan_configured() -> bool:
+    return bool([w for w in os.environ.get("WAN_WORKERS", "").split(",") if w.strip()])
+
+
 def local_generation_status() -> ToolStatus:
-    # A configured warm video-inference gateway makes the tool available WITHOUT
-    # a local torch/diffusers install — the gateway owns those deps and hosts the
-    # models warm (ADR 0002). This is the "thin orchestrator -> warm backend" path.
+    # The unified local-video backend (ADR 0013) — one provider seam, three transports:
+    #   1. distributed-WAN gRPC cluster (Mac MLX + on-demand vast refine), WAN_WORKERS set
+    #   2. warm video-inference gateway (HTTP), VIDEO_INFER_ENDPOINT set (ADR 0002)
+    #   3. in-process diffusers (cold-load), VIDEO_GEN_LOCAL_ENABLED=true
+    if distributed_wan_configured():
+        return ToolStatus.AVAILABLE
+
     from tools.video.video_infer_client import video_infer_endpoint
 
     if video_infer_endpoint():
         return ToolStatus.AVAILABLE
 
-    # Otherwise fall back to true in-process diffusers generation.
     if not local_generation_enabled():
         return ToolStatus.UNAVAILABLE
     try:
@@ -173,15 +198,87 @@ def local_generation_status() -> ToolStatus:
 
 def local_install_instructions() -> str:
     return (
-        "Run local open-source video models one of two ways:\n"
-        "  A) Warm inference gateway (recommended; unifies all 4 models on one\n"
-        "     server, no torch/diffusers needed in OpenMontage):\n"
-        "       set VIDEO_INFER_ENDPOINT=http://<gpu-host>:8000\n"
-        "       (gateway must implement the contract in ADR 0002 §5)\n"
-        "  B) In-process diffusers (cold-loads the model each call):\n"
+        "Run local open-source video models one of three ways (unified behind this provider):\n"
+        "  A) Distributed-WAN cluster (recommended; the local Mac MLX node(s), with an\n"
+        "     ON-DEMAND vast CUDA refine worker attached only when high-res refine is wanted):\n"
+        "       set WAN_WORKERS=127.0.0.1:50051[,<mac-peer>:50051]\n"
+        "       (optional) set VAST_REFINE_WORKER=<vast-host>:50051  to enable the refine pass\n"
+        "       see services/distributed_wan/ + ADR 0013.\n"
+        "  B) Warm inference gateway (HTTP, unifies all 4 models on one server):\n"
+        "       set VIDEO_INFER_ENDPOINT=http://<gpu-host>:8000   (contract in ADR 0002 §5)\n"
+        "  C) In-process diffusers (cold-loads the model each call):\n"
         "       set VIDEO_GEN_LOCAL_ENABLED=true\n"
-        "       pip install diffusers transformers accelerate torch pillow requests\n"
-        "Either way, use a GPU with the VRAM profile listed on the selected tool."
+        "       pip install diffusers transformers accelerate torch pillow requests"
+    )
+
+
+def generate_distributed_wan(
+    *,
+    tool_name: str,
+    variants: dict[str, dict[str, Any]],
+    default_variant: str,
+    inputs: dict[str, Any],
+) -> ToolResult:
+    """Dispatch a clip to the local distributed-WAN cluster via the gRPC orchestrator.
+
+    - Mac-only (no VAST_REFINE_WORKER): DIRECT no-refine T2V honoring the requested W×H.
+    - With vast attached: proposer→tiled-refine pipeline (orchestrator's fixed high-res canvas).
+    The orchestrator is a validated subprocess; this keeps the agent's tool a thin dispatcher."""
+    import json
+    import subprocess
+
+    workers = distributed_wan_workers()
+    if not workers:
+        return ToolResult(success=False, error="distributed-WAN backend not configured (WAN_WORKERS unset)")
+    orch = Path(os.environ.get("DISTWAN_ORCH_PATH",
+                               str(_repo_root() / "services" / "distributed_wan" / "grpc_orchestrator.py")))
+    if not orch.exists():
+        return ToolResult(success=False, error=f"distributed-WAN orchestrator not found: {orch}")
+
+    meta = variants.get(inputs.get("model_variant", default_variant)) or variants[default_variant]
+    width = int(inputs.get("width", meta.get("default_width", 832)))
+    height = int(inputs.get("height", meta.get("default_height", 480)))
+    num_frames = int(inputs.get("num_frames", 25))
+    seed = int(inputs.get("seed") if inputs.get("seed") is not None else 11)
+    out = Path(inputs.get("output_path", f"{tool_name}_distributed.mp4"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    refine = bool(os.environ.get("VAST_REFINE_WORKER", "").strip())  # vast attached -> refine pass
+    cmd = ["python3", str(orch), "--prompt", inputs["prompt"], "--frames", str(num_frames),
+           "--seed", str(seed), "--out", str(out)]
+    if refine:
+        mode = "distributed_refine"  # proposer(Mac) + refine(vast) -> orchestrator's high-res canvas
+    else:
+        mode = "local_mlx_direct"    # Mac-only DIRECT T2V at the requested resolution
+        cmd += ["--no-refine", "--fw-width", str(width), "--fw-height", str(height),
+                "--fw-frames", str(num_frames)]
+
+    env = {**os.environ, "WAN_WORKERS": ",".join(workers)}
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                              timeout=int(os.environ.get("DISTWAN_TIMEOUT", "3600")))
+    except subprocess.TimeoutExpired:
+        return ToolResult(success=False, error="distributed-WAN generation timed out")
+
+    out_path = None
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("ORCH_DONE "):
+            try:
+                out_path = json.loads(line[len("ORCH_DONE "):]).get("out")
+            except json.JSONDecodeError:
+                out_path = str(out)
+    if proc.returncode != 0 or not (out_path and Path(out_path).exists()):
+        tail = (proc.stdout or "")[-600:]
+        return ToolResult(success=False, error=f"distributed-WAN failed (rc={proc.returncode}):\n{tail}")
+
+    return ToolResult(
+        success=True,
+        data={"provider": tool_name, "provider_name": meta.get("name", tool_name), "mode": mode,
+              "workers": workers, "refine": refine, "prompt": inputs["prompt"],
+              "operation": inputs.get("operation", "text_to_video"),
+              "output": str(out_path), "format": "mp4", "license": meta.get("license", ""),
+              **probe_output(Path(out_path))},
+        artifacts=[str(out_path)], seed=seed, model=meta.get("hf_id", "wan"),
     )
 
 
@@ -262,9 +359,14 @@ def generate_local_video(
     default_variant: str,
     inputs: dict[str, Any],
 ) -> ToolResult:
-    # Route to a warm inference gateway if one is configured (ADR 0002). This
-    # avoids the per-call cold model load below and unifies all four models on
-    # one server. Falls through to in-process diffusers when unset.
+    # Unified local-video backend (ADR 0013), in priority order:
+    #   1. distributed-WAN cluster (Mac MLX + on-demand vast) when WAN_WORKERS is set
+    if distributed_wan_configured():
+        return generate_distributed_wan(
+            tool_name=tool_name, variants=variants, default_variant=default_variant, inputs=inputs,
+        )
+
+    # 2. warm inference gateway (HTTP) if configured (ADR 0002); else 3. in-process diffusers.
     from tools.video.video_infer_client import (
         generate_remote_video,
         video_infer_endpoint,
