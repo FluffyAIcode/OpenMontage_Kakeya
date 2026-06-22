@@ -41,8 +41,12 @@ die() { printf "\n\033[1;31mERROR: %s\033[0m\n" "$*" >&2; exit 1; }
 
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-say "ensure gateway deps (fastapi/uvicorn) in the venv"
-python -m pip install -q "fastapi>=0.110" "uvicorn[standard]>=0.29" "pydantic>=2.6"
+say "ensure gateway + registry deps in the venv"
+# fastapi/uvicorn run the gateway; jsonschema + pyyaml let OpenMontage's tool registry load so
+# /v1/capabilities works and the agent can DISCOVER wan_video (the re-anchored provider, ADR 0013).
+python -m pip install -q "fastapi>=0.110" "uvicorn[standard]>=0.29" "pydantic>=2.6" jsonschema pyyaml
+# Best-effort: install the full OpenMontage requirements if present (richer registry/tooling).
+[ -f "$WORKDIR/requirements.txt" ] && python -m pip install -q -r "$WORKDIR/requirements.txt" || true
 
 cd "$WORKDIR"
 DWAN="services/distributed_wan"
