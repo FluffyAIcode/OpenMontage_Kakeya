@@ -762,6 +762,26 @@ jobs — drop it from `WAN_WORKERS` or add an HDMI dummy plug for reliable 2-wor
 
 ---
 
+## Iteration 28 — public demo opened (no key) + routed to the display Mac
+
+**Trigger:** the web UI returned `401 missing or invalid X-API-Key` (the "API key" field was empty);
+owner asked to open the demo.
+
+**Done (agent-driven via SSH):** relaunched the Mac gateway with **no `AGENT_GATEWAY_API_KEY`**
+(auth off) and **`WAN_WORKERS=127.0.0.1:50051`** (display Mac only, so the open demo never lands on
+the headless peer's GPU watchdog). Verified end-to-end from the cloud VM with **no key**:
+`POST /v1/videos {fox prompt}` → job `49d70fc2ce6e` → `done` → downloaded real h264 480×256×16 fox
+clip (`tier01_evidence/public_open_demo.{mp4,_mid.png}`). The web UI now works with the key field
+empty.
+
+**Security note:** the public endpoint now accepts unauthenticated renders — fine for a watched
+demo, but anyone can spend Mac GPU time. Recommend a Cloudflare WAF/rate-limit rule on
+`POST /v1/videos` (owner dashboard) and re-enabling `AGENT_GATEWAY_API_KEY` after the demo. The
+gateway runs via `nohup` (not launchd) — it won't auto-restart on reboot; durable supervision is
+the ADR 0013 §5 hardening follow-up.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
