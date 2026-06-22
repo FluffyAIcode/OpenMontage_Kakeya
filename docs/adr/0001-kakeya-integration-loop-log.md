@@ -960,9 +960,35 @@ some wall-time cost. MLX tiles are SR (interpolative); vast tiles are generative
 f_θ weight-map merge. **Tests:** gateway mode resolution (auto/pipeline/distributed/pool) +
 orchestrator pipeline; 12/12 pass.
 
-**Networking note:** neither the cloud agent nor the head Mac can yet SSH the fresh vast box
-(`Permission denied (publickey)`). Unblock = add the head Mac's pubkey to vast `authorized_keys`;
-then the head drives vast bringup + the `-L` tunnel + the 3-node run autonomously.
+**Networking note:** the fresh vast box rejected both the cloud-agent and head keys at first
+(`Permission denied (publickey)`). Resolved using the cloud-agent's own `~/.ssh/vast_key` (env
+secret) to reach vast, then authorizing the head Mac's pubkey there. One gotcha: appending the head
+key with `echo >>` onto a no-trailing-newline `authorized_keys` **merged** it into the existing
+line (head key became a comment → still denied); fixed by rewriting `authorized_keys` with both keys
+on separate lines.
+
+**Live verification (3-node) ✅** — vast H200 (143 G): installed torch 2.12 + diffusers 0.38 +
+**protobuf** + **ftfy** (WAN text-encoder needs ftfy; first refine RPC failed `NameError: ftfy`),
+ran `grpc_worker --backend cuda --ops refine --preload` in tmux. Head→vast reachability = an SSH
+local-forward `127.0.0.1:50052 -> vast:50051` from the head. Gateway set
+`WAN_WORKERS=127.0.0.1:50051,192.168.68.51:50051,127.0.0.1:50052` + `AGENT_GATEWAY_MODE=distributed`.
+Public job → `agent.kakeya.ai`:
+
+```
+[orch] tile (0,0) <- 127.0.0.1:50052 (7.0s)    vast   (CUDA generative V2V)
+[orch] tile (0,1) <- 192.168.68.51:50051 (0.2s) Mac B  (MLX SR)
+[orch] tile (1,0) <- 127.0.0.1:50052 (11.6s)   vast
+[orch] tile (1,1) <- 192.168.68.51:50051 (0.2s) Mac B
+ORCH_DONE refine_wall_s=14.25 canvas_px=[768,1472]
+```
+
+Downloaded clip = **h264 1472×768 25f** — head proposed, **both** Mac B and vast refined
+(round-robin), higher-res than the 2-Mac pipeline's 832×480. ✅
+
+**Durability TODO (this topology):** the vast worker runs in `tmux` (survives SSH disconnect, not a
+vast reboot) and the head→vast tunnel is a `-fN` ssh (not auto-restarting). For a standing 3-node
+service, wrap the vast worker (systemd/tmux-resurrect) and the tunnel (autossh / launchd on the head)
+before relying on it unattended.
 
 ---
 
