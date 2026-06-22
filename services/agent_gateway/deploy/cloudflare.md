@@ -128,6 +128,40 @@ curl -s -X POST https://agent.kakeya.ai/v1/videos -H 'Content-Type: application/
 > active for the subdomain yet — re-check the Public Hostname mapping and that `cloudflared` is
 > running on the Mac.
 
+## Troubleshooting `error 1033` / `502` on `agent.kakeya.ai`
+
+Both mean Cloudflare's edge can't reach a healthy origin through the tunnel. Walk the chain on the
+**Mac** (the relay), in order:
+
+```bash
+# 1) Is the gateway ORIGIN actually up on the Mac?  (502 == connector ok, origin down)
+curl -s http://127.0.0.1:8088/healthz            # expect JSON {"status":"ok",...}
+#    not up? start it:  API_KEY=<secret> bash services/agent_gateway/deploy/mac_all_in_one.sh
+#    then watch:        tail -f ~/.openmontage-logs/gateway.log
+
+# 2) Is cloudflared running AND connected?  (1033 == no live connector for the hostname)
+cloudflared tunnel list                          # CONNECTIONS column must be non-empty
+cloudflared tunnel info kakeya-gw                # shows active edge connections
+ps aux | grep -v grep | grep cloudflared
+
+# 3) Does the RUNNING tunnel map agent.kakeya.ai -> http://localhost:8088 ?
+#    - CLI:        cloudflared tunnel --url http://localhost:8088 run kakeya-gw
+#    - config.yml: ingress: [{hostname: agent.kakeya.ai, service: http://localhost:8088}, {service: http_status:404}]
+#    - dashboard:  the tunnel's Public Hostname = agent.kakeya.ai (HTTP) -> localhost:8088
+```
+
+**Most common cause:** the DNS route (`cloudflared tunnel route dns kakeya-gw agent.kakeya.ai`)
+points at tunnel `kakeya-gw`, but a *different* tunnel (or a dashboard token tunnel) is the one
+actually running — so the edge has the route but no matching live connector → `1033`. Fix: run the
+**same** tunnel that owns the route, pointed at the gateway:
+
+```bash
+cloudflared tunnel --url http://localhost:8088 run kakeya-gw
+```
+
+Once `curl http://127.0.0.1:8088/healthz` returns JSON on the Mac **and** that tunnel is running,
+`https://agent.kakeya.ai/healthz` returns the same JSON.
+
 ## Alternative — real A-record (only if the host has a public IP + open 80/443)
 
 Not the vast box's case, but for a normal VPS: point `kakeya.ai` A-record (DNS-only, grey cloud)
