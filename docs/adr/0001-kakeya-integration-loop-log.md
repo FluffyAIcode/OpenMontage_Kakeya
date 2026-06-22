@@ -663,6 +663,35 @@ Mac-grade DIRECT T2V; adding a CUDA refiner re-enables high-res refine with no c
 
 ---
 
+## Iteration 24 — re-anchor to the agent: WAN cluster = registered provider tool (ADR 0012/0013)
+
+**Trigger:** owner accepted the architecture review and directed: localize OpenMontage + expose via
+Cloudflare; no co-located CUDA (on-demand vast for refine); re-evaluate the 512 G Mac's high-res
+ceiling; harden before public; collapse the two video backends.
+
+**Keystone shipped — re-anchor + collapse:** the distributed-WAN cluster is now a third transport
+behind the existing `generate_local_video()` seam, so `wan_video` (already
+`capability="video_generation"`, discoverable by `video_selector`, usable by every pipeline) routes
+to the **local Mac cluster** — the agent uses it like any provider. One unified local-video
+abstraction (distributed gRPC | warm HTTP gateway | in-process diffusers), not parallel stacks.
+- `WAN_WORKERS` → Mac-only DIRECT no-refine T2V at requested W×H.
+- `VAST_REFINE_WORKER` (optional) → appends an **on-demand** vast CUDA worker → proposer+refine.
+- `local_generation_status()` AVAILABLE when `WAN_WORKERS` set. Tests:
+  `tests/tools/test_local_wan_provider.py` (3) + gateway (7) = 10 pass.
+
+**Mac high-res re-evaluation (ADR 0012):** the earlier "low-res only" was a *small-Mac* OOM
+artifact. A ~512 G Apple-Silicon box (M3 Ultra 512 G / 819 GB/s) **removes the memory ceiling** —
+WAN 14B @ 720p fits easily. The real limit is **GPU time** (e.g. WAN 480p 5 s ≈ 11 min on M3 Ultra
+vs ~2–3 min on a 4090/H200). Few-step LoRA brings 14B/720p to a few minutes (async-friendly).
+Verdict: **the 512 G Mac IS high-res capable** (latency-bound, not memory-bound); attach vast for
+*speed*, not to *enable* resolution.
+
+**Honest:** still owner-run on the Mac (no cloud-agent path to the Macs; vast off). Remaining
+sequenced work in ADR 0013 §5: gateway `mode=agent` runtime, hardening (durable jobs/supervision/
+rate-limit/per-key auth), parameterize the refine canvas, benchmark the real box.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
