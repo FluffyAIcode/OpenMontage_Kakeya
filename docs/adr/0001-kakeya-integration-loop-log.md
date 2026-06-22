@@ -1021,6 +1021,32 @@ Membership flipped 3-node ↔ 2-Mac with **no gateway restart** (dynamic file). 
 
 ---
 
+## Iteration 36 — quality & duration optimization Phase 1 (ADR 0015)
+
+**Ask:** start optimizing two dimensions on the current architecture — **video quality** and **duration**.
+
+**Built (Phase 1, offline-validated):**
+- **Quality — seam-free full-frame refine.** Orchestrator `--refine-mode {auto,direct,single,tiled}`:
+  `single` runs ONE generative V2V over the whole upscaled clip on the best (CUDA) refiner — no 2×2
+  seams, no mixed MLX-SR tiles. `auto` keeps prior behavior.
+- **Quality — presets/knobs.** Gateway `quality=draft|standard|high` (+ per-knob overrides): high =
+  `refine_mode=single`, 1280×720, refine-steps 24, 24fps, interpolate ×2. Topology still from
+  `AGENT_GATEWAY_MODE`; `high` forces the seam-free single path on the CUDA box.
+- **Duration/smoothness.** `--fps`, `--seconds` (frames = round(seconds·fps)), `--interpolate {1,2,4}`
+  (linear-blend temporal interpolation). All encode paths go through `_encode(fps, interpolate)`;
+  `ORCH_DONE` reports fps/interpolate/frames.
+
+**Honest scope:** `single`/`high` uses one refiner (vast) per job (seam-free, fully generative) — use
+`distributed` to engage both refiners. Phase-1 `--seconds` resamples the proposer's motion (smoother,
+not new content); true long-form = Phase-2 chunked I2V continuity. Linear interp is a baseline; RIFE/
+FILM is Phase 2.
+
+**Tests:** `_interpolate` frame-count; gateway quality presets + seconds/overrides; real-gRPC
+`--refine-mode single` + fps/interpolate (ORCH_DONE fps=16, interpolate=2, frames=9). **20/20 pass.**
+Roadmap + phases in ADR 0015. Live high-res (`high`→vast 1280×720 seam-free) benchmark next.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

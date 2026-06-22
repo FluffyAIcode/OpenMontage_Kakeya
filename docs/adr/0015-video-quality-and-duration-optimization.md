@@ -1,0 +1,72 @@
+# ADR 0015 — Video generation quality & duration optimization (roadmap + Phase 1)
+
+**Status:** Accepted; Phase 1 implemented (offline-validated; live high-res refine pending).
+**Date:** 2026-06-22
+**Related:** ADR 0004 (coarse-to-fine), ADR 0010 (gRPC contract), ADR 0014 (proposer→refiner + 3-node),
+loop-log iterations 33–36.
+
+## 1. Where we are
+
+The distributed-WAN cluster produces ~**1472×768, 25f @ 12fps (~2 s)** via: head proposer (low-res
+WAN T2V) → upscale → 2×2 tiled refine (vast CUDA generative V2V + headless MLX SR) → f_θ merge. Two
+quality/duration ceilings:
+
+- **Quality:** mixing generative (vast) and interpolative-SR (Mac) tiles + 2×2 **seams**; fixed low
+  refine steps; proposer at very low res; output capped at the canvas size and 12fps.
+- **Duration:** fixed 25 frames; WAN 1.3B is bounded per pass (no long-form/continuity), so clips are
+  ~2 s with no real lever for length or smoothness.
+
+## 2. Levers
+
+**Quality**
+- Q1 **Seam-free full-frame generative refine** on a strong CUDA box (no 2×2 tiling) — removes seams
+  and the inconsistent MLX-SR tiles. *(Phase 1)*
+- Q2 **Quality knobs/presets** (proposer res+steps, refine steps, strength, output resolution). *(P1)*
+- Q3 **Motion smoothness**: temporal interpolation (×2/×4); optical-flow (RIFE/FILM) later. *(P1 baseline / P2 RIFE)*
+- Q4 Bigger/better refiner model (WAN 14B / SDXL-style detailer), learned SR (Real-ESRGAN) on the Mac. *(P2)*
+
+**Duration**
+- D1 **fps + target-seconds** plumbing (frames = seconds·fps), temporal resample. *(Phase 1)*
+- D2 **True long-form** via chunked autoregressive generation with overlap + I2V continuity
+  (last frames of chunk N seed chunk N+1) and crossfade stitch. *(Phase 2)*
+- D3 Multi-shot storyboards (agent-planned shots concatenated with transitions). *(Phase 3)*
+
+## 3. Phase 1 (this ADR — implemented)
+
+**Orchestrator** (`grpc_orchestrator.py`):
+- `--refine-mode {auto,direct,single,tiled}`. `single` = one **seam-free full-frame** refine on the
+  best refiner (the quality path: routes a generative V2V to vast at high res). `auto` keeps prior
+  behavior (MLX→single, CUDA→tiled). `--single-refine`/`--no-refine` remain as aliases.
+- `--fps`, `--seconds` (frames = round(seconds·fps)), `--interpolate {1,2,4}` (linear-blend temporal
+  interpolation → smoother motion / higher fps). All exit paths encode via `_encode(fps, interpolate)`.
+- `ORCH_DONE` now reports `fps`, `interpolate`, final `frames`.
+
+**Gateway** (`agent_gateway/server.py`): `quality` preset **draft|standard|high** + per-knob overrides
++ `seconds`/`fps`/`interpolate`:
+- `draft` → proposer-only direct, small/fast.
+- `standard` → current (832×480, 12fps, refine-steps 16).
+- `high` → **seam-free** (`refine_mode=single`) at **1280×720**, refine-steps 24, **24fps**,
+  interpolate ×2.
+Presets set knobs only; topology stays with `AGENT_GATEWAY_MODE`, except `high` forces
+`refine_mode=single` so the job is a clean full-frame generative refine on the CUDA refiner.
+
+## 4. Honest tradeoffs
+
+- `single`/`high` is **seam-free and fully generative** but runs the whole frame on ONE refiner (vast),
+  so it does not use the headless Mac for that job (use `distributed` when you want both refiners).
+- Phase-1 `--seconds` lengthens playback by **temporal resampling/interpolation of the proposer's
+  motion** — smoother/slower, not *new* content. True longer content needs Phase-2 chunked I2V.
+- Linear interpolation is a smoothness baseline; RIFE/FILM (optical flow) is the Phase-2 upgrade.
+
+## 5. Metrics to track (next loops)
+
+- Quality: refine seconds vs steps; seam error (Δ at tile edges, → 0 with `single`); output resolution.
+- Duration: max stable seconds per pass; chunk-boundary continuity error (Phase 2).
+- Cost/latency per preset on the live cluster (draft/standard/high).
+
+## 6. Validation
+
+Offline (no GPU): `_interpolate` frame-count math; gateway `quality` preset → orchestrator knob
+plumbing; `--seconds` → frames; real-gRPC two-worker `--refine-mode single` with `--fps/--interpolate`
+(ORCH_DONE fps/interpolate/frames). 20/20 pass. Live high-res (`high` → vast 1280×720 seam-free) to be
+benchmarked next loop.

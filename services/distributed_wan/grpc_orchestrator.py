@@ -74,6 +74,31 @@ def _frames_to_mp4_bytes(frames, fps=12):
     return buf.getvalue()
 
 
+def _interpolate(frames, factor):
+    """Temporal interpolation x`factor` via linear blend between consecutive frames.
+
+    Dependency-free smoothness/fps lever (ADR 0015 Phase 1): turns T frames into (T-1)*factor + 1.
+    Not optical-flow (RIFE/FILM is the Phase-2 upgrade), but a real motion-smoothing baseline."""
+    if factor <= 1 or frames.shape[0] < 2:
+        return frames
+    out = []
+    for i in range(frames.shape[0] - 1):
+        a = frames[i].astype(np.float32); b = frames[i + 1].astype(np.float32)
+        for k in range(factor):
+            t = k / factor
+            out.append((a * (1.0 - t) + b * t).round().astype(np.uint8))
+    out.append(frames[-1])
+    return np.stack(out)
+
+
+def _encode(frames, out_path, fps=12, interpolate=1):
+    """Apply optional interpolation, write the mp4 at `fps`, and a mid-frame png. Returns frame count."""
+    f = _interpolate(frames, interpolate)
+    iio.mimwrite(out_path, [f[i] for i in range(f.shape[0])], format="mp4", fps=fps, codec="libx264")
+    Image.fromarray(f[f.shape[0] // 2]).save(out_path.replace(".mp4", "_mid.png"))
+    return int(f.shape[0])
+
+
 def _ramp(n):
     return np.minimum(np.arange(n), np.arange(n)[::-1]) + 1.0
 
@@ -131,8 +156,21 @@ def main():
     ap.add_argument("--refine-spread", choices=["weighted", "roundrobin"], default="weighted",
                     help="tiled refine assignment: 'weighted' (speed-weighted; a fast refiner may "
                          "take all tiles) or 'roundrobin' (every refiner gets a share, incl. slow MLX).")
+    # --- quality + duration knobs (ADR 0015) ---
+    ap.add_argument("--refine-mode", choices=["auto", "direct", "single", "tiled"], default="auto",
+                    help="refine topology: auto (mlx->single, cuda->tiled), direct (proposer only), "
+                         "single (one seam-free full-frame refine on the best refiner — the quality "
+                         "path on a CUDA box), tiled (2x2 f_theta merge across refiners).")
+    ap.add_argument("--fps", type=int, default=12, help="output frame rate")
+    ap.add_argument("--seconds", type=float, default=0.0,
+                    help="target duration; if >0, frames = round(seconds*fps) (Phase-1 temporal "
+                         "resample of the proposer; true long-form chunking is Phase 2).")
+    ap.add_argument("--interpolate", type=int, default=1,
+                    help="temporal interpolation factor (x2/x4) for smoother motion / higher fps.")
     ap.add_argument("--out", default="distributed_wan_grpc.mp4")
     args = ap.parse_args()
+    if args.seconds and args.seconds > 0:
+        args.frames = max(2, round(args.seconds * args.fps))
 
     addrs = [a for a in os.environ.get("WAN_WORKERS", "").split(",") if a.strip()]
     if not addrs:
@@ -146,7 +184,7 @@ def main():
     # DIRECT (no-refine) mode: one T2V generation on the framework worker, no tiled refine.
     # This is the Mac-only / single-GPU path (mlx-video has no vid2vid). Auto-enabled when no
     # refine worker is present, so the service still produces video with just the Mac.
-    if args.no_refine or not refine_workers:
+    if args.no_refine or args.refine_mode == "direct" or not refine_workers:
         fw = max(fw_workers, key=lambda w: w.speed)
         nf = args.fw_frames
         print(f"[orch] DIRECT (no-refine) on {fw.addr} ({fw.backend}) "
@@ -155,14 +193,12 @@ def main():
             prompt=args.prompt, width=args.fw_width, height=args.fw_height,
             num_frames=nf, steps=args.proposer_steps, seed=args.seed)), "generate")
         frames = _mp4_to_frames(mp4)
-        iio.mimwrite(args.out, [frames[i] for i in range(frames.shape[0])], format="mp4", fps=12,
-                     codec="libx264")
-        Image.fromarray(frames[frames.shape[0] // 2]).save(args.out.replace(".mp4", "_mid.png"))
+        nout = _encode(frames, args.out, args.fps, args.interpolate)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "direct",
                                          "out": args.out, "gen_seconds": round(gs, 2),
-                                         "px": [args.fw_height, args.fw_width],
-                                         "frames": int(frames.shape[0])}), flush=True)
+                                         "px": [args.fw_height, args.fw_width], "fps": args.fps,
+                                         "interpolate": args.interpolate, "frames": nout}), flush=True)
         return
 
     # SINGLE-PASS pipeline: proposer (low-res, head) -> one refiner over the WHOLE clip
@@ -171,7 +207,9 @@ def main():
     # refiner does a spatial-SR upscale (or generative V2V if its build supports it). Auto-on
     # when the chosen refiner is an MLX worker; --single-refine forces it for any backend.
     refiner = max(refine_workers, key=lambda w: w.speed)
-    if args.single_refine or refiner.backend.startswith("mlx"):
+    _use_single = (args.refine_mode == "single" or args.single_refine
+                   or (args.refine_mode == "auto" and refiner.backend.startswith("mlx")))
+    if _use_single:
         fw = max(fw_workers, key=lambda w: w.speed)
         if fw.addr == refiner.addr and len(workers) > 1:
             # prefer a DISTINCT proposer so both Macs are used (head proposes, headless refines)
@@ -193,14 +231,14 @@ def main():
             width=args.out_width, height=args.out_height, num_frames=args.frames,
             steps=args.refine_steps, strength=args.strength, seed=args.seed + 10)), "refine")
         final = _mp4_to_frames(mp4b)
-        iio.mimwrite(args.out, [final[i] for i in range(final.shape[0])], format="mp4", fps=12, codec="libx264")
-        Image.fromarray(final[final.shape[0] // 2]).save(args.out.replace(".mp4", "_mid.png"))
+        px = [int(final.shape[1]), int(final.shape[2])]
+        nout = _encode(final, args.out, args.fps, args.interpolate)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "pipeline",
                                          "proposer": fw.addr, "refiner": refiner.addr, "out": args.out,
                                          "proposer_seconds": round(gs, 2), "refine_seconds": round(rg, 2),
-                                         "px": [int(final.shape[1]), int(final.shape[2])],
-                                         "frames": int(final.shape[0])}), flush=True)
+                                         "px": px, "fps": args.fps, "interpolate": args.interpolate,
+                                         "frames": nout}), flush=True)
         return
 
     tiles = [(jy, jx) for jy in range(NY) for jx in range(NX)]
@@ -272,11 +310,12 @@ def main():
         acc[:, oy:oy + HT, ox:ox + WT, :] += frames.astype(np.float64) * wmap
         wsum[:, oy:oy + HT, ox:ox + WT, :] += wmap
     final = (acc / np.maximum(wsum, 1e-6)).clip(0, 255).astype(np.uint8)
-    iio.mimwrite(args.out, [final[i] for i in range(T)], format="mp4", fps=12, codec="libx264")
-    Image.fromarray(final[T // 2]).save(args.out.replace(".mp4", "_mid.png"))
+    nout = _encode(final, args.out, args.fps, args.interpolate)
     import json
-    print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "refine_wall_s": round(wall, 2),
-                                     "out": args.out, "canvas_px": [CH, CW]}), flush=True)
+    print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "tiled",
+                                     "refine_wall_s": round(wall, 2), "out": args.out,
+                                     "canvas_px": [CH, CW], "fps": args.fps,
+                                     "interpolate": args.interpolate, "frames": nout}), flush=True)
 
 
 if __name__ == "__main__":

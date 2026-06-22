@@ -85,6 +85,18 @@ def _serve(ops):
     return server, port
 
 
+def test_interpolate_helper():
+    """_interpolate turns T frames into (T-1)*factor + 1 (smoothness/fps lever)."""
+    import grpc_orchestrator as orch
+    frames = np.zeros((5, 8, 8, 3), np.uint8)
+    frames[1] = 255
+    assert orch._interpolate(frames, 1).shape[0] == 5
+    assert orch._interpolate(frames, 2).shape[0] == 9    # (5-1)*2 + 1
+    assert orch._interpolate(frames, 4).shape[0] == 17   # (5-1)*4 + 1
+    blended = orch._interpolate(frames, 2)
+    assert 0 < int(blended[1].max()) < 255  # midpoint between frame0(0) and frame1(255) is blended
+
+
 def test_orchestrator_single_refine_pipeline(tmp_path):
     """Two in-process workers (framework + refine) -> --single-refine produces an mp4 at out-res."""
     prop, p_prop = _serve(["framework"])   # head / proposer
@@ -108,5 +120,30 @@ def test_orchestrator_single_refine_pipeline(tmp_path):
         assert info["refiner"] == f"127.0.0.1:{p_refn}"
         assert info["px"] == [48, 96]
         assert info["frames"] == 5
+    finally:
+        prop.stop(0); refn.stop(0)
+
+
+def test_orchestrator_refine_mode_single_fps_interp(tmp_path):
+    """--refine-mode single (quality path) + --fps/--interpolate: forces a seam-free full-frame
+    refine on the best refiner and the output frame count reflects interpolation."""
+    prop, p_prop = _serve(["framework"])
+    refn, p_refn = _serve(["refine"])
+    import time as _t
+    _t.sleep(0.5)
+    try:
+        out = tmp_path / "q.mp4"
+        env = {**os.environ, "WAN_WORKERS": f"127.0.0.1:{p_prop},127.0.0.1:{p_refn}"}
+        proc = subprocess.run(
+            [sys.executable, str(DWAN / "grpc_orchestrator.py"), "--prompt", "a fox in snow",
+             "--refine-mode", "single", "--frames", "5", "--fw-frames", "5", "--fw-width", "64",
+             "--fw-height", "32", "--out-width", "96", "--out-height", "48",
+             "--fps", "16", "--interpolate", "2", "--out", str(out)],
+            env=env, capture_output=True, text=True, timeout=120)
+        assert out.exists(), proc.stdout + proc.stderr
+        info = json.loads([l for l in proc.stdout.splitlines() if l.startswith("ORCH_DONE")][-1].split(" ", 1)[1])
+        assert info["mode"] == "pipeline"
+        assert info["fps"] == 16 and info["interpolate"] == 2
+        assert info["frames"] == 9   # (5-1)*2 + 1 after interpolation
     finally:
         prop.stop(0); refn.stop(0)
