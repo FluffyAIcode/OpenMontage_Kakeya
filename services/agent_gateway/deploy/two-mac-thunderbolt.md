@@ -79,6 +79,27 @@ for p in "a red fox in snow" "a sea turtle over a reef"; do
        -H 'X-API-Key: <your-secret>' -d "{\"prompt\":\"$p\"}"; echo; done
 ```
 
+## Headless Mac GPU watchdog (`kIOGPUCommandBufferCallbackErrorTimeout`)
+
+A Mac with **no display attached / driven over SSH only** runs macOS's GPU command-buffer watchdog
+aggressively, so long Metal kernels (WAN's VAE decode or a denoise step) get aborted mid-flight —
+`[METAL] Command buffer execution failed: Caused GPU Timeout Error`. This is **not** OOM and **not**
+the network; it's the headless GPU watchdog. Fixes, in order of reliability:
+
+1. **Attach a display (best, hardware):** plug a **headless HDMI/DisplayPort dummy plug** (~$10) into
+   the headless Mac. macOS then thinks a display is present → relaxes the GPU watchdog **and** unlocks
+   full GPU clocks. This is the standard fix for headless Apple-Silicon ML.
+2. **Run the worker inside the logged-in GUI (Aqua) session**, not a bare SSH shell: enable auto-login
+   and start the worker via a **LaunchAgent** (loaded in the user session) or a Screen-Sharing
+   Terminal. GPU buffers from the console session aren't watchdog'd as hard as pure-SSH ones.
+3. **Shorten each command buffer (software):** `MLX_TILING=aggressive` (splits the VAE decode into
+   small buffers) + smaller resolution/frames/steps. Helps, but #1 is the durable fix.
+4. **`caffeinate -dimsu`** so the Mac/GPU never sleeps or throttles mid-render.
+
+**Immediate workaround:** route generation only to a **display-attached** Mac — start the gateway
+with just that worker (omit the headless peer from `WAN_WORKERS`/`PEERS`) until the headless Mac has
+a dummy plug + GUI-session worker.
+
 ## Notes
 
 - Keep `API_KEY` set; each render costs Mac GPU time.
