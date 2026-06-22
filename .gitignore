@@ -79,3 +79,10 @@ remotion-composer/public/*
 remotion-composer/public/demo-props/test-*
 remotion-composer/public/demo-props/talking-head-*
 remotion-composer/public/demo-props/caption-burn-*
+
+# Local run artifacts / scratch (cloud-agent driven sessions)
+omgw.log
+omgw_jid.txt
+tsd-agent.log
+docs/adr/tier01_evidence/*.mp4
+.claude/skills/beautiful-mermaid/package*.json
