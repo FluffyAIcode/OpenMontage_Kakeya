@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- cloudflared tunnel LaunchAgent (HEAD Mac). Runs run_cloudflared.sh, which fetches the
+     CURRENT tunnel token at startup (rotation-resilient). Substitute __HOME__. Install the
+     wrapper at __HOME__/run_cloudflared.sh and this plist at ~/Library/LaunchAgents/.
+     IMPORTANT: run exactly ONE connector for this tunnel — do not also hard-code a --token
+     connector elsewhere, or they conflict. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.kakeya.cloudflared</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/run_cloudflared.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.openmontage-logs/cloudflared.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.openmontage-logs/cloudflared.log</string>
+</dict>
+</plist>

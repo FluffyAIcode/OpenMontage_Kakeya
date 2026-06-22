@@ -59,10 +59,32 @@ need **automatic login** for that user:
 Without auto-login, `KeepAlive` still restarts the services on crash and they start the moment
 someone logs in — but a headless reboot won't auto-resume.
 
+## cloudflared tunnel (head Mac) — `ai.kakeya.cloudflared` + `run_cloudflared.sh`
+
+The third LaunchAgent keeps the Cloudflare tunnel (`agent.kakeya.ai` / `ssh.kakeya.ai`) up across
+reboots. **Do not hard-code the token in the plist** — a dashboard *Refresh token* invalidates it
+and silently breaks auto-start (this bit us, ADR 0001 Iteration 31). Instead the plist runs
+`run_cloudflared.sh`, which calls `cloudflared tunnel token <UUID>` to fetch the **current** token
+at startup (needs a valid `~/.cloudflared/cert.pem` for the zone) — rotation-resilient.
+
+```bash
+# install the wrapper (substitute __TUNNEL_ID__ and chmod +x) and the plist (substitute __HOME__)
+cp run_cloudflared.sh ~/run_cloudflared.sh && chmod +x ~/run_cloudflared.sh
+cp ai.kakeya.cloudflared.plist ~/Library/LaunchAgents/
+U=$(id -u)
+launchctl bootstrap "gui/$U" ~/Library/LaunchAgents/ai.kakeya.cloudflared.plist
+launchctl enable "gui/$U/ai.kakeya.cloudflared"
+grep "Registered tunnel connection" ~/.openmontage-logs/cloudflared.log    # expect connIndex 0..3
+```
+
+**CRITICAL — run exactly ONE connector for this tunnel.** Multiple connectors with the same token
+(or a stale/rotated token) produce `control stream encountered a failure while serving` and the
+tunnel goes `Down`. If you ever need to recover: `pkill -f "cloudflared tunnel"`, then start a
+single connector with a CURRENT token — `cloudflared tunnel --url http://localhost:8088 run --token
+$(cloudflared tunnel token <UUID>)` — and watch for `Registered tunnel connection`.
+
 ## Notes
 - The worker plist sets `PATH` venv-first so the MLX subprocess (`python -m mlx_video…`) resolves
   to the venv that has `mlx-video`. `MLX_TILING=aggressive` keeps VAE-decode command buffers small.
 - The gateway plist intentionally omits `AGENT_GATEWAY_API_KEY` (open demo). Add it back (an
   `EnvironmentVariables` key) to re-require `X-API-Key`.
-- `cloudflared` (the `kakeya-gw` tunnel serving `agent.kakeya.ai`/`ssh.kakeya.ai`) should also be a
-  service for full reboot durability: `sudo cloudflared service install <tunnel-token>` (LaunchDaemon).

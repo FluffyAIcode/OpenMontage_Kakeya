@@ -828,6 +828,34 @@ recovery (`KeepAlive`) works regardless. `cloudflared` should also be made a ser
 
 ---
 
+## Iteration 31 — tunnel outage + recovery; rotation-resilient cloudflared LaunchAgent
+
+**What broke (my mistakes, documented honestly):**
+1. The first cloudflared LaunchAgent used `cloudflared tunnel run --token` and a hard-coded token;
+   retiring the live `--url` connector left it unable to serve. The self-healing fallback relied on
+   `setsid`, which **macOS lacks**, so it didn't fire → tunnel down, SSH lost.
+2. While recovering, multiple connectors ran at once → `control stream … failure` churn.
+3. The decisive cause: the owner had **rotated the tunnel token**, so every connector using the old
+   (plist) token was rejected. Cloudflare's UI does not display the token after a rotate.
+
+**Recovery (owner-run, since SSH was down):** `cloudflared tunnel token <UUID>` fetches the CURRENT
+token from the CLI (no dashboard needed). Running a single `cloudflared tunnel --url
+http://localhost:8088 run --token "$TOKEN"` registered 4/4 connections → tunnel `Healthy`, SSH +
+`agent.kakeya.ai` back.
+
+**Durable + rotation-resilient fix:** `deploy/launchd/run_cloudflared.sh` (wrapper that fetches the
+token via `cloudflared tunnel token <UUID>` at startup) + `ai.kakeya.cloudflared.plist`
+(RunAtLoad/KeepAlive). Installed live (connector pid healthy, 4/4 registered), foreground
+connectors retired → exactly one durable connector. So auto-start survives reboots AND future token
+rotations (as long as `cert.pem` stays valid).
+
+**Lessons:** never hard-code a Cloudflare tunnel token in auto-start; never run >1 connector per
+tunnel; macOS has no `setsid`; the tunnel carries the cloud agent's only SSH path, so changes to it
+must be done with a self-healing/he-can-recover-it plan. Compute (workers/gateway/FileVault/
+auto-login) was unaffected throughout.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
