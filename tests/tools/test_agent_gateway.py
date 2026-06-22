@@ -185,6 +185,25 @@ def test_distributed_mode_spreads_tiles(tmp_path, monkeypatch):
     assert f["refine_spread"] == "roundrobin" and f["single_refine"] is False and f["no_refine"] is False
 
 
+def test_dynamic_workers_file_membership(tmp_path, monkeypatch):
+    """AGENT_GATEWAY_WORKERS_FILE -> live membership: an ephemeral vast refiner can be added/removed
+    by rewriting the file, with NO gateway restart. Falls back to WAN_WORKERS when unreadable."""
+    wf = tmp_path / "wan_workers"
+    wf.write_text("127.0.0.1:50051,192.168.68.51:50051\n")  # 2-Mac fallback to start
+    monkeypatch.setenv("AGENT_GATEWAY_WORKERS_FILE", str(wf))  # set BEFORE the fixture's reload
+    c, server = _mode_fixture(tmp_path, monkeypatch, workers="127.0.0.1:50051", mode_env="distributed")
+    assert server.current_workers() == ["127.0.0.1:50051", "192.168.68.51:50051"]
+    assert c.get("/healthz").json()["dynamic_workers"] is True
+    # vast comes online: supervisor appends it -> gateway sees 3 workers on the NEXT job, no restart
+    wf.write_text("127.0.0.1:50051,192.168.68.51:50051,127.0.0.1:50052\n")
+    f = _job_flags(c, c.post("/v1/videos", json={"prompt": "vast online"}).json()["job_id"])
+    assert f["workers"] == "127.0.0.1:50051,192.168.68.51:50051,127.0.0.1:50052"
+    # vast released: supervisor drops it -> next job is back to 2-Mac, still no restart
+    wf.write_text("127.0.0.1:50051,192.168.68.51:50051\n")
+    f2 = _job_flags(c, c.post("/v1/videos", json={"prompt": "vast gone"}).json()["job_id"])
+    assert f2["workers"] == "127.0.0.1:50051,192.168.68.51:50051"
+
+
 def test_pool_mode_two_macs(tmp_path, monkeypatch):
     """Two Thunderbolt-bridged Macs -> pool mode: 2 jobs run + complete in parallel."""
     fake = tmp_path / "fake_orch.py"

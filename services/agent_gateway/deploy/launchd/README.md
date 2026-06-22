@@ -12,6 +12,11 @@ Two agents (Label → role):
 |---|---|---|
 | `ai.kakeya.mlxworker` | every Mac | MLX worker (`grpc_worker.py --backend mlx`) under `caffeinate` |
 | `ai.kakeya.gateway`   | head Mac only | agent gateway (`server.py :8088`) over all workers |
+| `ai.kakeya.vastsupervisor` | head Mac only | keeps an EPHEMERAL vast CUDA refiner self-healing; flips the gateway's dynamic worker file 3-node↔2-Mac (see [`../ephemeral-vast-refiner.md`](../ephemeral-vast-refiner.md)) |
+
+> For the ephemeral-vast supervisor, run the gateway with `AGENT_GATEWAY_WORKERS_FILE=~/.kakeya/wan_workers`
+> (and `AGENT_GATEWAY_MODE=distributed`) so worker membership is dynamic — no gateway restart when
+> vast comes/goes. Setup: [`../ephemeral-vast-refiner.md`](../ephemeral-vast-refiner.md).
 
 **Worker ROLE is set per Mac via `--mlx-ops` (`__MLX_OPS__` in the plist):**
 

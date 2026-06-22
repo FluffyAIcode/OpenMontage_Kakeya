@@ -56,7 +56,24 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 API_KEY = os.environ.get("AGENT_GATEWAY_API_KEY", "").strip()
 WAN_WORKERS = os.environ.get("WAN_WORKERS", "").strip()
 WORKER_LIST = [a.strip() for a in WAN_WORKERS.split(",") if a.strip()]
+# Dynamic membership (non-pool modes): if set, the worker list is re-read from this file on every
+# job + healthz, so an EPHEMERAL refiner (e.g. a vast box that is released/recreated) can be added
+# or removed by a supervisor WITHOUT restarting the gateway. Falls back to WAN_WORKERS when unset
+# or unreadable. One line, comma- or newline-separated "host:port" entries.
+WORKERS_FILE = os.environ.get("AGENT_GATEWAY_WORKERS_FILE", "").strip()
 AGENT_RUNTIME_CMD = os.environ.get("AGENT_RUNTIME_CMD", "").strip()
+
+
+def current_workers() -> list[str]:
+    """Live worker list: the workers-file (if set+readable) else the static WAN_WORKERS env."""
+    if WORKERS_FILE:
+        try:
+            txt = Path(WORKERS_FILE).read_text().strip()
+            if txt:
+                return [a.strip() for a in txt.replace("\n", ",").split(",") if a.strip()]
+        except OSError:
+            pass
+    return WORKER_LIST
 # Worker-pool mode: treat each WAN_WORKERS entry as an INDEPENDENT GPU (e.g. two Thunderbolt-
 # bridged Mac minis). Each job runs on ONE worker (DIRECT no-refine), N jobs in parallel = N×
 # throughput. Off => classic single-orchestrator call using ALL workers (proposer+CUDA-refiner).
@@ -154,15 +171,17 @@ def _log(job: Job, line: str):
 
 
 def _run_video_job(job: Job):
-    if not WAN_WORKERS:
-        job.status, job.error = "error", "WAN_WORKERS not configured on the gateway host"
+    live = current_workers()
+    if not live:
+        job.status, job.error = "error", "no workers configured on the gateway host"
         return
     if not ORCH.exists():
         job.status, job.error = "error", f"orchestrator not found: {ORCH}"
         return
-    # In pool mode acquire ONE worker (blocks until a Mac is free); else use all workers.
+    # In pool mode acquire ONE worker (blocks until a Mac is free); else use the LIVE worker list
+    # (dynamic when AGENT_GATEWAY_WORKERS_FILE is set, so an ephemeral vast refiner can come/go).
     worker_addr = _WORKER_Q.get() if POOL_MODE else None
-    job_workers = worker_addr if POOL_MODE else WAN_WORKERS
+    job_workers = worker_addr if POOL_MODE else ",".join(live)
     job.status, job.stage = "running", "framework"
     out_path = JOBS_DIR / job.id / "video.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,8 +271,10 @@ def _dispatch(job: Job):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "workers": WORKER_LIST or None, "mode": GW_MODE,
+    live = current_workers()
+    return {"status": "ok", "workers": live or None, "mode": GW_MODE,
             "pool_mode": POOL_MODE, "pipeline_mode": PIPELINE_MODE,
+            "workers_file": WORKERS_FILE or None, "dynamic_workers": bool(WORKERS_FILE),
             "parallel": (len(WORKER_LIST) if POOL_MODE else 1), "orchestrator": ORCH.exists(),
             "agent_runtime": bool(AGENT_RUNTIME_CMD), "jobs": len(JOBS)}
 

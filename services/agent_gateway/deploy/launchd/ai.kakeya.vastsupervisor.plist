@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ephemeral-vast refiner supervisor LaunchAgent (HEAD Mac only). Substitute __HOME__.
+     Keeps a released/recreated vast box self-healing as the CUDA refiner and flips the gateway's
+     dynamic workers file between 3-node (vast up) and 2-Mac fallback (vast gone). Requires the
+     gateway to run with AGENT_GATEWAY_WORKERS_FILE=__HOME__/.kakeya/wan_workers, and a config at
+     __HOME__/.kakeya/vast.env (see vast_refiner_supervisor.sh header). Install to ~/Library/LaunchAgents/. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.kakeya.vastsupervisor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/openmontage-mac/services/agent_gateway/deploy/vast_refiner_supervisor.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>VAST_ENV</key><string>__HOME__/.kakeya/vast.env</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.openmontage-logs/vastsupervisor.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.openmontage-logs/vastsupervisor.log</string>
+</dict>
+</plist>
