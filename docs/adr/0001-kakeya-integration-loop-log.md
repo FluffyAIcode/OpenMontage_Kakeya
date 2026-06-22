@@ -713,6 +713,33 @@ returns JSON and I can verify end-to-end.
 
 ---
 
+## Iteration 26 — render test PASSED on the Mac MLX GPU (cloud agent drove it via SSH-over-Cloudflare)
+
+**Access:** owner exposed `ssh.kakeya.ai → Cloudflare Tunnel → Mac:22` and authorized the cloud
+agent's key. The agent now SSHes in via `cloudflared access ssh` (config `Host mac`) and drives
+everything itself — no more human copy-paste.
+
+**Mac facts:** head Mac has a **display** (3440×1440), runs the MLX worker on `127.0.0.1:50051`
+under `caffeinate -dimsu MLX_TILING=aggressive`; headless peer is `169.254.27.104:50051`.
+
+**Two real clips rendered (agent-driven, verified):**
+1. **Direct orchestrator** → display worker, DIRECT no-refine `480×256` → `(16,256,480)` in **104 s**,
+   real h264 fox-in-snow (`tier01_evidence/mac_render_proof.{mp4,_mid.png}`). No watchdog timeout
+   (display + tiling + caffeinate).
+2. **Through the gateway** (`POST /v1/videos` → job `e7fe26437000` → `done`), downloaded via
+   `/v1/jobs/{id}/video` → real h264 otter-in-kelp (`tier01_evidence/gateway_render_proof.{mp4,_mid.png}`).
+   Proves gateway → orchestrator → MLX worker → served mp4.
+
+**Open issues (owner-side, not integration):**
+- **Public `agent.kakeya.ai` DNS/route flapping:** it resolved + returned `healthz 200` earlier
+  this session, then stopped resolving entirely — the Cloudflare DNS record/tunnel public-hostname
+  for the subdomain needs restoring. The gateway + tunnel connector are healthy locally.
+- **Headless peer watchdog:** round-robin still sends ~half of jobs to `169.254.27.104`, which trips
+  `kIOGPUCommandBufferCallbackErrorTimeout`. Drop it from `WAN_WORKERS` (route to the display Mac)
+  or add an HDMI dummy plug to bring it back reliably.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
