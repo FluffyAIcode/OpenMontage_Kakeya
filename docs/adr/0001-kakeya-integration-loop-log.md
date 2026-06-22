@@ -740,6 +740,28 @@ under `caffeinate -dimsu MLX_TILING=aggressive`; headless peer is `169.254.27.10
 
 ---
 
+## Iteration 27 — PUBLIC path proven end-to-end at agent.kakeya.ai ✅
+
+**Root cause of the earlier outage (resolved):** the Mac's `cloudflared` was authenticated to a
+different Cloudflare account/zone (`agentmate.build`), so `cloudflared tunnel route dns kakeya-gw …`
+wrote junk records `agent.kakeya.ai.agentmate.build` against the wrong tunnel (`aeb49800…`).
+`agent.kakeya.ai` / `ssh.kakeya.ai` never existed in the real `kakeya.ai` zone (NXDOMAIN). Fix:
+re-auth to the `kakeya.ai` account and route by the GATEWAY tunnel **ID**:
+`cloudflared tunnel route dns 99e33427-bf06-4c63-8678-8ee37bfc3921 agent.kakeya.ai` (+ `ssh`).
+
+**Public proof (agent-driven):** from the cloud-agent VM, `https://agent.kakeya.ai/healthz`
+returns the gateway JSON; `POST /v1/videos` (Cloudflare round-trip) → job `fe99ecd5d15d` → `done`
+→ downloaded `/v1/jobs/{id}/video` = real h264 480×256×16 otter clip
+(`tier01_evidence/public_render_proof.{mp4,_mid.png}`). Full chain verified:
+**VM → Cloudflare → kakeya-gw tunnel → gateway → orchestrator → Mac MLX GPU → mp4 → back to VM.**
+
+**Notes:** the cloud-agent VM's stub resolver (`10.0.0.2`) cached the old NXDOMAIN; worked around
+by pinning the CF edge IP in `/etc/hosts` (VM-local, not repo). SSH-over-Cloudflare (`ssh.kakeya.ai`)
+also restored. Headless peer (`169.254.27.104`) still trips the GPU watchdog on ~half of round-robin
+jobs — drop it from `WAN_WORKERS` or add an HDMI dummy plug for reliable 2-worker serving.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
