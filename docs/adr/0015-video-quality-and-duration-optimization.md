@@ -65,8 +65,17 @@ Presets set knobs only; topology stays with `AGENT_GATEWAY_MODE`, except `high` 
   out_w×out_h before the CUDA V2V** (which keeps its input resolution) — without this, `high`/single
   produced input-res output, not 720p.
 
-Still Phase 2b: real I2V checkpoint wiring/benchmark on vast; **RIFE/FILM** optical-flow interpolation
-(current `_interpolate` is linear).
+**Phase 2b (implemented + validated live):** wired **Wan2.1-I2V-14B-720P** on vast (diffusers
+`WanImageToVideoPipeline`, CLIP image encoder, flow_shift 5.0). The long-form generator does the
+T2V seed (1.3B) + I2V chunks (14B) on one CUDA box; deploy is env-gated (`CUDA_I2V_MODEL` /
+`VAST_I2V_MODEL` in vast.env → bootstrap launches `--ops framework,refine,i2v`). **Live result:**
+`ORCH_DONE mode=longform continuity=i2v chunks=2 px=[720,1280] frames=46 seconds=2.88` → ffprobe
+**h264 1280×720, 46f, 2.875s** — **true native 720p generative** (no SR) with **I2V continuity**
+across the chunk boundary (25+25−4). ~8.3 s/step at 720p; gen ≈ 391 s for 2×20-step chunks.
+
+Remaining Phase 2c: **RIFE/FILM** optical-flow interpolation (current `_interpolate` is linear);
+durable i2v under the supervisor on vast images that kill processes on SSH logout (need
+systemd/linger or a persistent connection); larger chunk counts / seconds benchmarks.
 
 ## 4. Honest tradeoffs
 

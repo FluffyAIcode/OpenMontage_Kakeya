@@ -1073,6 +1073,32 @@ supervisor; without it, chunks are independent T2V (continuity off). RIFE/FILM i
 
 ---
 
+## Iteration 38 — Phase 2b: I2V-14B-720P long-form on vast — TRUE 720p + continuity ✅
+
+Deployed **Wan2.1-I2V-14B-720P** (84 G) on the new vast (RTX PRO 6000 Blackwell, 97 G). Worker does
+the T2V seed (1.3B) + I2V chunks (14B) — launched with `--ops framework,refine,i2v` + `CUDA_I2V_MODEL`.
+Long-form ran entirely on vast (`WAN_WORKERS=127.0.0.1:50052` via the head→vast tunnel).
+
+**Live result:** `ORCH_DONE mode=longform continuity=i2v chunks=2 px=[720,1280] frames=46 seconds=2.88
+gen=391s` → ffprobe **h264 1280×720, 46f, 2.875s**. **True native 720p generative** (the 14B I2V
+generates at 1280×720 — no SR) with **I2V continuity** across the chunk boundary (25+25−4 crossfade).
+~8.3 s/step at 720p.
+
+**Issues hit + fixes (real-GPU):**
+- `/workspace` HF cache `Stale file handle` → `HF_HOME=/root/.hf_home`.
+- head-key merge on vast `authorized_keys` (no trailing newline) → un-merge/dedup normalizer.
+- the 1.3B V2V caps at ~480p (Iter 37) → 14B I2V is the true-720p path.
+- **vast image kills user processes on SSH logout** (no systemd/linger; killed tmux AND setsid) →
+  ran the worker under a **persistent SSH** for the validation. Durable i2v under the supervisor on
+  such images needs systemd/linger (Phase 2c). `vast_bootstrap.sh`/supervisor now env-gate i2v
+  (`CUDA_I2V_MODEL`/`VAST_I2V_MODEL`) for images where tmux persists.
+- orchestrator on the head used the head repo's OLD pb2 (no `init_image`) → scp'd the regenerated pb2.
+- the MLX head seed hit the **Metal GPU watchdog** → moved the T2V seed onto vast's 1.3B (all-on-vast).
+
+**Tests:** 20 offline (no GPU) still green. Code in PR #5 (ADR 0015 §3b).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

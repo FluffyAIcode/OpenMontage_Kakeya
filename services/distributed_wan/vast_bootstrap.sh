@@ -55,9 +55,18 @@ else
   echo "[bootstrap] deps already present"
 fi
 
-# 2) launch the refiner durably (tmux; vast containers usually have no systemd)
+# 2) launch the worker. OPS/preload depend on whether an I2V-720P model is configured:
+#   CUDA_I2V_MODEL set -> ops "framework,refine,i2v" for long-form (ADR 0015 Phase 2b), lazy i2v load.
+#   else               -> ops "refine --preload" (the standard refiner).
+# Durability note: vast images vary — some kill user processes on SSH logout (no systemd/linger),
+# which also kills tmux. On those, run the worker under a persistent connection (or enable linger).
+if [ -n "${CUDA_I2V_MODEL:-}" ]; then
+  OPS="framework,refine,i2v"; PRE=""
+else
+  OPS="refine"; PRE="--preload"
+fi
 command -v tmux >/dev/null || { apt-get update -y >/dev/null 2>&1 && apt-get install -y tmux >/dev/null 2>&1; }
 tmux kill-session -t refiner 2>/dev/null || true
 tmux new-session -d -s refiner \
-  "cd '$DISTWAN' && HF_HOME='$HF_HOME' '$VENV_PY' grpc_worker.py --backend cuda --host 0.0.0.0 --port '$PORT' --ops refine --preload 2>&1 | tee '$LOG'"
-echo "[bootstrap] launched refiner in tmux 'refiner' (model load/download may take minutes); log=$LOG"
+  "cd '$DISTWAN' && HF_HOME='$HF_HOME' CUDA_I2V_MODEL='${CUDA_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${CUDA_I2V_OFFLOAD:-0}' '$VENV_PY' grpc_worker.py --backend cuda --host 0.0.0.0 --port '$PORT' --ops $OPS $PRE 2>&1 | tee '$LOG'"
+echo "[bootstrap] launched worker (ops=$OPS) in tmux 'refiner'; log=$LOG"

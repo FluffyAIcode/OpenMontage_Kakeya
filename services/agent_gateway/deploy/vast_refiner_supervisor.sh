@@ -76,8 +76,9 @@ once() {
       "$DISTWAN_LOCAL/grpc_worker.py" "$DISTWAN_LOCAL/video_worker_pb2.py" \
       "$DISTWAN_LOCAL/video_worker_pb2_grpc.py" "$DISTWAN_LOCAL/vast_bootstrap.sh" \
       "$VAST_SSH_USER@$VAST_SSH_HOST:/workspace/distwan/" 2>/dev/null
+  # VAST_I2V_MODEL (optional, in vast.env) -> launch a long-form-capable worker (framework,refine,i2v).
   ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
-      "bash /workspace/distwan/vast_bootstrap.sh" 2>/dev/null
+      "CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' bash /workspace/distwan/vast_bootstrap.sh" 2>/dev/null
 
   # worker still loading the model? keep vast OUT until it actually listens (no broken jobs)
   if ! remote_listening; then

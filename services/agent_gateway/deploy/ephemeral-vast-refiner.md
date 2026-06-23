@@ -59,6 +59,19 @@ recreate it auto-converges back to a refiner, and while vast is gone the service
    tail -f ~/.openmontage-logs/vastsupervisor.log
    ```
 
+## Optional: long-form I2V-720P generator (ADR 0015 Phase 2b)
+
+To make vast a **long-form** generator (true 720p + I2V continuity), add to `~/.kakeya/vast.env`:
+```bash
+VAST_I2V_MODEL=Wan-AI/Wan2.1-I2V-14B-720P-Diffusers   # ~84 G; bootstrap launches framework,refine,i2v
+# VAST_I2V_OFFLOAD=1                                   # CPU offload if VRAM-tight
+```
+The supervisor passes it to `vast_bootstrap.sh`, which launches `--ops framework,refine,i2v` (lazy
+14B load). **Caveats:** the 84 G model re-downloads on each *destroyed* recreate (use a persistent
+volume to avoid), and on vast images that **kill user processes on SSH logout** (no systemd/linger)
+the tmux worker won't persist — enable `loginctl enable-linger` / systemd, or run under a persistent
+connection. Validated live: `mode=longform continuity=i2v px=[720,1280]` (h264 1280×720).
+
 ## After each vast recreate
 
 Only the SSH endpoint changes. Either:
