@@ -1099,6 +1099,29 @@ generates at 1280×720 — no SR) with **I2V continuity** across the chunk bound
 
 ---
 
+## Iteration 39 — Phase 2c: optical-flow (mci) interpolation + durable held-worker (auto-recover) ✅
+
+**Optical-flow interpolation:** `--interp-method {linear,mci}` (gateway `interp_method`; `high`→mci).
+`_interpolate_mci` uses **ffmpeg `minterpolate`** (motion-compensated: `mi_mode=mci`, `mc_mode=aobmc`,
+bidir, vsbmc) — RIFE-class smoothness over linear blend, linear fallback if unavailable. Confirmed
+`minterpolate` is in the bundled ffmpeg (not falling back). Unit-tested (frame-count grows).
+
+**Durable i2v on ephemeral vast** (`VAST_HOLD_WORKER=1`): the new Blackwell vast image **kills user
+processes on SSH logout** (no systemd/linger — killed tmux AND setsid). Fix: the **launchd-durable
+head supervisor holds the worker as a child of a persistent ssh** (`KAKEYA_HELD=<host> … exec python
+grpc_worker --ops framework,refine,i2v`); `vast_bootstrap.sh` gains `BOOTSTRAP_NO_LAUNCH` (deps-only).
+`vast_onstart.sh` authorizes the head key + persistent `HF_HOME` so a recreated box is auto-adopted.
+
+**Validated live:** killed the manual persistent worker; the supervisor **spawned and now holds** the
+i2v worker — 1 held ssh on the head, `ops=['framework','refine','i2v']` via the tunnel, 3-node — with
+**no dependency on any interactive session**. On recreate: held ssh drops → 2-Mac fallback → new box
+(key authorized, endpoint via vast.env/`VAST_RESOLVE_CMD`) → deps reinstall + held worker respawn →
+auto-recovery. (Caveat: the ~84 G I2V model re-downloads unless `HF_HOME` is on a persistent volume.)
+
+**Tests:** 21 offline green. ADR 0015 §3c. Phases 1/2/2b/2c all landed in PR #5.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

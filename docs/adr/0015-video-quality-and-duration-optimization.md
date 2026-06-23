@@ -73,9 +73,25 @@ T2V seed (1.3B) + I2V chunks (14B) on one CUDA box; deploy is env-gated (`CUDA_I
 **h264 1280×720, 46f, 2.875s** — **true native 720p generative** (no SR) with **I2V continuity**
 across the chunk boundary (25+25−4). ~8.3 s/step at 720p; gen ≈ 391 s for 2×20-step chunks.
 
-Remaining Phase 2c: **RIFE/FILM** optical-flow interpolation (current `_interpolate` is linear);
-durable i2v under the supervisor on vast images that kill processes on SSH logout (need
-systemd/linger or a persistent connection); larger chunk counts / seconds benchmarks.
+## 3c. Phase 2c (implemented + validated)
+
+- **Optical-flow interpolation** (`--interp-method {linear,mci}`, gateway `interp_method`; `high`→mci):
+  `_interpolate_mci` uses **ffmpeg `minterpolate`** (motion-compensated, `mi_mode=mci` /
+  `mc_mode=aobmc` / bidir / vsbmc) — the RIFE-class smoothness upgrade over linear blending, with a
+  safe linear fallback. Verified `minterpolate` is present in the bundled ffmpeg.
+- **Durable i2v on ephemeral vast** (`VAST_HOLD_WORKER=1`): vast images that kill user processes on
+  SSH logout (no systemd/linger) broke the tmux worker. Fix: the **head supervisor (launchd-durable)
+  holds the worker as a child of a persistent ssh** (`KAKEYA_HELD=<host> … exec python grpc_worker`);
+  `vast_bootstrap.sh` gains `BOOTSTRAP_NO_LAUNCH` (deps-only). On recreate the held ssh drops → 2-Mac
+  fallback → on the new box (head key authorized via `vast_onstart.sh`, endpoint from vast.env /
+  `VAST_RESOLVE_CMD`) the supervisor reinstalls + respawns the held worker → **auto-recovery**.
+  **Validated live:** killed the manual worker; the supervisor spawned + holds the i2v worker (1 held
+  ssh, `ops=['framework','refine','i2v']` via tunnel, 3-node) independent of any interactive session.
+- **Persistent model cache:** `vast_onstart.sh` + docs — point `HF_HOME` at a vast **Volume** (or use
+  STOP not DESTROY) to avoid re-downloading the ~84 G I2V model each recreate.
+
+Remaining (future): neural RIFE/FILM network (vs ffmpeg mci); larger chunk-count / longer-seconds
+benchmarks; persistent-volume automation for the I2V model.
 
 ## 4. Honest tradeoffs
 
