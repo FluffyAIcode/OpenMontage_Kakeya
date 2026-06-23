@@ -48,6 +48,33 @@ def log(msg: str):
     print(f"[agent] {msg}", flush=True)
 
 
+def _prepare_ffmpeg():
+    """Ensure `ffmpeg`/`ffprobe` resolve on PATH for all tool subprocesses.
+
+    Macs in this deployment have no system ffmpeg — the cluster uses imageio-ffmpeg's bundled
+    binary. Symlink it as `ffmpeg` (and `ffprobe` if imageio-ffmpeg ships one) into a dir on PATH
+    so video_compose/audio_mixer (which call bare `ffmpeg`) work without a brew install."""
+    import shutil
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        return
+    bind = Path(os.environ.get("TMPDIR", "/tmp")) / "agent_ffmpeg_bin"
+    bind.mkdir(parents=True, exist_ok=True)
+    link = bind / "ffmpeg"  # imageio-ffmpeg bundles ffmpeg only (not ffprobe)
+    if not link.exists():
+        try:
+            os.symlink(exe, link)
+        except OSError:
+            pass
+    os.environ["PATH"] = f"{bind}{os.pathsep}{os.environ.get('PATH', '')}"
+    os.environ.setdefault("IMAGEIO_FFMPEG_EXE", exe)
+    os.environ.setdefault("FFMPEG_BINARY", exe)
+
+
 def _skill(path: str) -> str:
     """Best-effort director-skill text for LLM context (truncated). Intelligence lives in skills."""
     for cand in (REPO / "skills" / f"{path}.md", REPO / f"{path}.md"):
@@ -152,6 +179,7 @@ def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None 
     from schemas.artifacts import validate_artifact
     from tools.tool_registry import registry
 
+    _prepare_ffmpeg()
     registry.discover()
     llm = llm or LLM()
     log(f"LLM provider={llm.provider} model={llm.model or '(default)'}  fake_assets={FAKE}")
