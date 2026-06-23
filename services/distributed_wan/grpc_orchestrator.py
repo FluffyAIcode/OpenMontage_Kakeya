@@ -299,6 +299,13 @@ def main():
             width=args.out_width, height=args.out_height, num_frames=args.frames,
             steps=args.refine_steps, strength=args.strength, seed=args.seed + 10)), "refine")
         final = _mp4_to_frames(mp4b)
+        # Generative refiners (WAN 1.3B V2V) output at the model's NATIVE resolution (~832x480)
+        # regardless of input size, so SR-upscale the generative result to the display target.
+        # (MLX SR already returns out dims -> this is a no-op there.) Honest: generative detail at
+        # native res + spatial upscale to out_w x out_h.
+        if (int(final.shape[2]), int(final.shape[1])) != (args.out_width, args.out_height):
+            final = np.stack([np.asarray(Image.fromarray(final[i]).resize(
+                (args.out_width, args.out_height), Image.LANCZOS)) for i in range(final.shape[0])])
         px = [int(final.shape[1]), int(final.shape[2])]
         nout = _encode(final, args.out, args.fps, args.interpolate)
         import json

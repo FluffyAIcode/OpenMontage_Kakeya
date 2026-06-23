@@ -1047,6 +1047,32 @@ Roadmap + phases in ADR 0015. Live high-res (`high`→vast 1280×720 seam-free) 
 
 ---
 
+## Iteration 37 — quality+duration Phase 2: long-form (chunked I2V) + hi-res refine fix; live vast
+
+**New vast** (RTX PRO 6000 Blackwell, 97G) brought up as refiner via the supervisor (fresh-cache fix
+for a `Stale file handle` on the `/workspace` HF cache → `HF_HOME=/root/.hf_home`; re-authorized the
+head key with the un-merge/dedup normalizer). Supervisor **auto-recovered the new endpoint** (tunnel +
+3-node) after the vast.env edit — durability proven on a real recreate.
+
+**Hi-res quality finding (two real-GPU runs):** the WAN **1.3B V2V model is locked to its native
+~832×480** — feeding it 720p just gets downscaled, so generative output is 480p. The honest hi-res
+pipeline is **generative refine at native res → spatial SR-upscale to the display target**. Fix:
+`single` upscales the proposer before the refiner AND SR-upscales the generative result to
+`out_w×out_h`. **Validated:** proposer(MLX)→generative V2V on vast(cuda, 9.1s)→SR→interpolate ×2 →
+`ORCH_DONE px=[720,1280] frames=49`, ffprobe **h264 1280×720, 49f, 2.04s**. ✅ (True 720p needs a
+720P/14B model — Phase 2b.)
+
+**Phase 2 long-form** (ADR 0015 §3b): `--chunks` autoregressive generation with **I2V continuity**
+(proto `init_image`; CUDA `WanImageToVideoPipeline` gated on `CUDA_I2V_MODEL`; advertises `i2v` only
+then) + crossfade `_stitch`. Gateway `longform`/`chunks`. Tests: `_stitch` math, real-gRPC long-form
+(chunks=3, continuity=i2v, frames=23), gateway long-form + presets/seconds. **23/23 pass.**
+
+**Honest scope:** long-form continuity needs a Wan **I2V checkpoint** on the CUDA box
+(`CUDA_I2V_MODEL`) — orchestration validated offline + the contract propagates to vast via the
+supervisor; without it, chunks are independent T2V (continuity off). RIFE/FILM is Phase 2b.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
