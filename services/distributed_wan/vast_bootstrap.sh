@@ -65,6 +65,11 @@ if [ -n "${CUDA_I2V_MODEL:-}" ]; then
 else
   OPS="refine"; PRE="--preload"
 fi
+# BOOTSTRAP_NO_LAUNCH=1 -> install deps only; the caller (supervisor held-worker mode) launches the
+# worker under a persistent connection (for vast images that kill processes on SSH logout).
+if [ "${BOOTSTRAP_NO_LAUNCH:-0}" = "1" ]; then
+  echo "[bootstrap] deps ready; NO_LAUNCH (caller holds the worker)"; exit 0
+fi
 command -v tmux >/dev/null || { apt-get update -y >/dev/null 2>&1 && apt-get install -y tmux >/dev/null 2>&1; }
 tmux kill-session -t refiner 2>/dev/null || true
 tmux new-session -d -s refiner \

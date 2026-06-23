@@ -156,13 +156,13 @@ def _auth(x_api_key: Optional[str] = Header(default=None)):
 QUALITY_PRESETS: dict[str, dict] = {
     "draft": {"fw_width": 384, "fw_height": 224, "fw_frames": 13, "proposer_steps": 5,
               "refine_steps": 12, "out_width": 640, "out_height": 384, "frames": 25,
-              "fps": 12, "interpolate": 1, "refine_mode": "direct"},
+              "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
     "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
-                 "fps": 12, "interpolate": 1, "refine_mode": ""},
+                 "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
     "high": {"fw_width": 512, "fw_height": 288, "fw_frames": 17, "proposer_steps": 8,
              "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
-             "fps": 24, "interpolate": 2, "refine_mode": "single"},
+             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "single"},
 }
 
 
@@ -176,6 +176,7 @@ class VideoRequest(BaseModel):
     frames: Optional[int] = None
     fps: Optional[int] = None
     interpolate: Optional[int] = Field(None, ge=1, le=4)
+    interp_method: Optional[str] = Field(None, pattern="^(linear|mci)$")
     fw_width: Optional[int] = None
     fw_height: Optional[int] = None
     fw_frames: Optional[int] = None
@@ -194,8 +195,8 @@ class VideoRequest(BaseModel):
     def resolved(self) -> dict:
         """Merge preset + explicit overrides into a concrete param dict for the orchestrator."""
         p = dict(QUALITY_PRESETS.get(self.quality, QUALITY_PRESETS["standard"]))
-        for k in ("frames", "fps", "interpolate", "fw_width", "fw_height", "fw_frames",
-                  "proposer_steps", "refine_steps", "out_width", "out_height", "refine_mode"):
+        for k in ("frames", "fps", "interpolate", "interp_method", "fw_width", "fw_height",
+                  "fw_frames", "proposer_steps", "refine_steps", "out_width", "out_height", "refine_mode"):
             v = getattr(self, k)
             if v is not None:
                 p[k] = v
@@ -245,6 +246,7 @@ def _run_video_job(job: Job):
            "--refine-steps", str(p["refine_steps"]), "--seed", str(p["seed"]),
            "--out-width", str(p.get("out_width", 832)), "--out-height", str(p.get("out_height", 480)),
            "--fps", str(p.get("fps", 12)), "--interpolate", str(p.get("interpolate", 1)),
+           "--interp-method", str(p.get("interp_method", "linear")),
            "--out", str(out_path)]
     if p.get("seconds", 0):
         cmd += ["--seconds", str(p["seconds"])]

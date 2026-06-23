@@ -124,6 +124,17 @@ def test_orchestrator_single_refine_pipeline(tmp_path):
         prop.stop(0); refn.stop(0)
 
 
+def test_interpolate_mci_increases_frames():
+    """mci (ffmpeg minterpolate) optical-flow interpolation increases frame count; linear-fallback
+    safe if ffmpeg/minterpolate is unavailable."""
+    import grpc_orchestrator as orch
+    rng = np.random.default_rng(1)
+    frames = (rng.integers(0, 255, (8, 48, 64, 3))).astype(np.uint8)
+    out = orch._interpolate_mci(frames, 2, base_fps=12)
+    assert out.shape[0] > frames.shape[0]          # more frames after interpolation
+    assert out.shape[1:] == frames.shape[1:]       # same HxWxC
+
+
 def test_stitch_helper():
     """_stitch concatenates chunks with crossfade: total = sum(len) - (k-1)*overlap."""
     import grpc_orchestrator as orch

@@ -77,8 +77,7 @@ def _frames_to_mp4_bytes(frames, fps=12):
 def _interpolate(frames, factor):
     """Temporal interpolation x`factor` via linear blend between consecutive frames.
 
-    Dependency-free smoothness/fps lever (ADR 0015 Phase 1): turns T frames into (T-1)*factor + 1.
-    Not optical-flow (RIFE/FILM is the Phase-2 upgrade), but a real motion-smoothing baseline."""
+    Dependency-free smoothness/fps baseline (ADR 0015 Phase 1): T frames -> (T-1)*factor + 1."""
     if factor <= 1 or frames.shape[0] < 2:
         return frames
     out = []
@@ -91,9 +90,41 @@ def _interpolate(frames, factor):
     return np.stack(out)
 
 
-def _encode(frames, out_path, fps=12, interpolate=1):
-    """Apply optional interpolation, write the mp4 at `fps`, and a mid-frame png. Returns frame count."""
-    f = _interpolate(frames, interpolate)
+def _interpolate_mci(frames, factor, base_fps=12):
+    """Motion-compensated (optical-flow) interpolation via ffmpeg `minterpolate` — the RIFE-class
+    smoothness upgrade over linear blending (ADR 0015 Phase 2c). Falls back to linear if ffmpeg/
+    minterpolate is unavailable. Returns ~T*factor frames."""
+    if factor <= 1 or frames.shape[0] < 2:
+        return frames
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        src = Path(__import__("tempfile").mkstemp(suffix=".mp4")[1])
+        dst = Path(__import__("tempfile").mkstemp(suffix=".mp4")[1])
+        iio.mimwrite(src, [frames[i] for i in range(frames.shape[0])], format="mp4", fps=base_fps,
+                     codec="libx264")
+        target = base_fps * factor
+        flt = (f"minterpolate=fps={target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1")
+        import subprocess
+        r = subprocess.run([exe, "-y", "-i", str(src), "-filter:v", flt, "-c:v", "libx264", str(dst)],
+                           capture_output=True)
+        if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+            raise RuntimeError("minterpolate failed")
+        out = _mp4_to_frames(dst.read_bytes())
+        src.unlink(missing_ok=True); dst.unlink(missing_ok=True)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        print(f"[orch] mci interpolation unavailable ({exc}); linear fallback", flush=True)
+        return _interpolate(frames, factor)
+
+
+def _encode(frames, out_path, fps=12, interpolate=1, method="linear"):
+    """Apply optional interpolation (linear or mci/optical-flow), write the mp4 at `fps` + a
+    mid-frame png. Returns the final frame count."""
+    if interpolate > 1:
+        f = _interpolate_mci(frames, interpolate, base_fps=fps) if method == "mci" else _interpolate(frames, interpolate)
+    else:
+        f = frames
     iio.mimwrite(out_path, [f[i] for i in range(f.shape[0])], format="mp4", fps=fps, codec="libx264")
     Image.fromarray(f[f.shape[0] // 2]).save(out_path.replace(".mp4", "_mid.png"))
     return int(f.shape[0])
@@ -192,6 +223,9 @@ def main():
                          "resample of the proposer; true long-form chunking is Phase 2).")
     ap.add_argument("--interpolate", type=int, default=1,
                     help="temporal interpolation factor (x2/x4) for smoother motion / higher fps.")
+    ap.add_argument("--interp-method", choices=["linear", "mci"], default="linear",
+                    help="interpolation: 'linear' (blend) or 'mci' (ffmpeg motion-compensated / "
+                         "optical-flow — RIFE-class smoothness; falls back to linear if unavailable).")
     # Long-form (ADR 0015 Phase 2): chunked autoregressive generation with I2V continuity.
     ap.add_argument("--chunks", type=int, default=1,
                     help=">1 enables long-form: N chunks generated autoregressively (chunk N+1 seeded "
@@ -258,7 +292,7 @@ def main():
                 clips.append(_to_out(_mp4_to_frames(mp4))); total_gs += gs
                 print(f"[orch]   chunk {c} in {gs:.1f}s", flush=True)
         stitched = _stitch(clips, args.chunk_overlap)
-        nout = _encode(stitched, args.out, args.fps, args.interpolate)
+        nout = _encode(stitched, args.out, args.fps, args.interpolate, args.interp_method)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "longform",
                                          "generator": gen.addr, "continuity": "i2v" if cont else "off",
@@ -280,7 +314,7 @@ def main():
             prompt=args.prompt, width=args.fw_width, height=args.fw_height,
             num_frames=nf, steps=args.proposer_steps, seed=args.seed)), "generate")
         frames = _mp4_to_frames(mp4)
-        nout = _encode(frames, args.out, args.fps, args.interpolate)
+        nout = _encode(frames, args.out, args.fps, args.interpolate, args.interp_method)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "direct",
                                          "out": args.out, "gen_seconds": round(gs, 2),
@@ -330,7 +364,7 @@ def main():
             final = np.stack([np.asarray(Image.fromarray(final[i]).resize(
                 (args.out_width, args.out_height), Image.LANCZOS)) for i in range(final.shape[0])])
         px = [int(final.shape[1]), int(final.shape[2])]
-        nout = _encode(final, args.out, args.fps, args.interpolate)
+        nout = _encode(final, args.out, args.fps, args.interpolate, args.interp_method)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "pipeline",
                                          "proposer": fw.addr, "refiner": refiner.addr, "out": args.out,
@@ -408,7 +442,7 @@ def main():
         acc[:, oy:oy + HT, ox:ox + WT, :] += frames.astype(np.float64) * wmap
         wsum[:, oy:oy + HT, ox:ox + WT, :] += wmap
     final = (acc / np.maximum(wsum, 1e-6)).clip(0, 255).astype(np.uint8)
-    nout = _encode(final, args.out, args.fps, args.interpolate)
+    nout = _encode(final, args.out, args.fps, args.interpolate, args.interp_method)
     import json
     print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "tiled",
                                      "refine_wall_s": round(wall, 2), "out": args.out,

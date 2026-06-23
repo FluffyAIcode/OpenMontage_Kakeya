@@ -29,7 +29,7 @@ def client(tmp_path, monkeypatch):
         "import argparse,json,pathlib\n"
         "ap=argparse.ArgumentParser()\n"
         "for a in ['--prompt','--out']: ap.add_argument(a)\n"
-        "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']:\n"
+        "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--interp-method','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']:\n"
         "    ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
@@ -122,11 +122,11 @@ def _mode_fixture(tmp_path, monkeypatch, *, workers, mode_env):
     fake.write_text(
         "import argparse,json,os,pathlib\n"
         "ap=argparse.ArgumentParser()\n"
-        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--refine-spread','--fps','--interpolate','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--refine-spread','--fps','--interpolate','--interp-method','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
         "x=ap.parse_args()\n"
-        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS',''),'fps':x.fps,'interpolate':x.interpolate,'refine_mode':x.refine_mode,'out_width':x.out_width,'frames':x.frames,'seconds':x.seconds,'refine_steps':x.refine_steps,'chunks':x.chunks,'chunk_frames':x.chunk_frames,'chunk_overlap':x.chunk_overlap}\n"
+        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS',''),'fps':x.fps,'interpolate':x.interpolate,'interp_method':x.interp_method,'refine_mode':x.refine_mode,'out_width':x.out_width,'frames':x.frames,'seconds':x.seconds,'refine_steps':x.refine_steps,'chunks':x.chunks,'chunk_frames':x.chunk_frames,'chunk_overlap':x.chunk_overlap}\n"
         "print('[orch]   refine:  100%',flush=True)\n"
         "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'MODEMP4')\n"
         "print('FLAGS '+json.dumps(flags),flush=True)\n"
@@ -196,6 +196,7 @@ def test_quality_presets(tmp_path, monkeypatch):
     fh = _job_flags(c, c.post("/v1/videos", json={"prompt": "hero clip", "quality": "high"}).json()["job_id"])
     assert fh["out_width"] == "1280" and fh["fps"] == "24" and fh["interpolate"] == "2"
     assert fh["refine_mode"] == "single" and fh["refine_steps"] == "24"
+    assert fh["interp_method"] == "mci"   # high uses optical-flow interpolation
     # draft: proposer-only direct
     fd = _job_flags(c, c.post("/v1/videos", json={"prompt": "draft clip", "quality": "draft"}).json()["job_id"])
     assert fd["refine_mode"] == "direct"
@@ -248,7 +249,7 @@ def test_pool_mode_two_macs(tmp_path, monkeypatch):
     fake.write_text(
         "import argparse,json,pathlib,time\n"
         "ap=argparse.ArgumentParser()\n"
-        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--interp-method','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
         "ap.add_argument('--refine-spread')\n"

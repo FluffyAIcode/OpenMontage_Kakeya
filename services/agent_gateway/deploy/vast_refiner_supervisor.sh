@@ -67,18 +67,38 @@ once() {
   # vast unreachable (released/destroyed) -> drop it, fall back
   if ! ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" true 2>/dev/null; then
     pkill -f "L $VAST_LOCAL_PORT:localhost:$VAST_REMOTE_PORT" 2>/dev/null
+    pkill -f "KAKEYA_HELD=" 2>/dev/null   # drop any held-worker ssh to the gone box
     write_workers "$BASE_WORKERS"; log "vast $VAST_SSH_HOST:$VAST_SSH_PORT unreachable -> 2-Mac fallback"; return
   fi
 
-  # reachable: push code + idempotent bootstrap (installs deps + launches worker on a fresh box)
+  # reachable: push code + idempotent bootstrap
   ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" "mkdir -p /workspace/distwan" 2>/dev/null
   scp $SSH_OPTS -P "$VAST_SSH_PORT" \
       "$DISTWAN_LOCAL/grpc_worker.py" "$DISTWAN_LOCAL/video_worker_pb2.py" \
       "$DISTWAN_LOCAL/video_worker_pb2_grpc.py" "$DISTWAN_LOCAL/vast_bootstrap.sh" \
       "$VAST_SSH_USER@$VAST_SSH_HOST:/workspace/distwan/" 2>/dev/null
-  # VAST_I2V_MODEL (optional, in vast.env) -> launch a long-form-capable worker (framework,refine,i2v).
-  ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
-      "CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' bash /workspace/distwan/vast_bootstrap.sh" 2>/dev/null
+
+  if [ "${VAST_HOLD_WORKER:-0}" = "1" ]; then
+    # HELD-WORKER mode (ADR 0015 Phase 2c): for vast images that kill processes on SSH logout
+    # (no systemd/linger), keep the worker alive as a child of a persistent ssh held by THIS
+    # supervisor (the head is durable under launchd). bootstrap installs deps only.
+    ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+        "CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' BOOTSTRAP_NO_LAUNCH=1 bash /workspace/distwan/vast_bootstrap.sh" 2>/dev/null
+    if ! pgrep -f "KAKEYA_HELD=$VAST_SSH_HOST" >/dev/null 2>&1; then
+      pkill -f "KAKEYA_HELD=" 2>/dev/null   # clean stale holds (e.g. old host)
+      OPS="framework,refine,i2v"; [ -z "${VAST_I2V_MODEL:-}" ] && OPS="framework,refine"
+      nohup ssh $SSH_OPTS -o ServerAliveInterval=20 -o ServerAliveCountMax=1000 \
+          -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS" \
+          >> "$HOME/.openmontage-logs/vast_held_worker.log" 2>&1 &
+      log "spawned held worker ssh -> $VAST_SSH_HOST (ops=$OPS); model load may take minutes"
+      sleep 3
+    fi
+  else
+    # bootstrap launches the worker (tmux) — fine on images where tmux persists across logout.
+    ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+        "CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' bash /workspace/distwan/vast_bootstrap.sh" 2>/dev/null
+  fi
 
   # worker still loading the model? keep vast OUT until it actually listens (no broken jobs)
   if ! remote_listening; then
