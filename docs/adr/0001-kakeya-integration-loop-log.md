@@ -1187,7 +1187,16 @@ i.e. *activate* that existing knowledge, not invent a new step. Implemented in
 **Validation (offline, no keys/GPU):** `tests/tools/test_agent_runtime.py` extended — the stub LLM
 handles the "video prompt director" system prompt and the test asserts each scene received a
 directed prompt (`startswith "directed cinematic shot, "`, `!= raw`) via `director_prompts.json`.
-`2 passed`. Still blocked on a live head LLM endpoint (Kakeya/Gemma) for the real `mode=agent` run.
+`2 passed`.
+
+**LLM endpoint smoke test (`--check-llm`).** The head now runs the Kakeya **Gemma 26B** runtime
+(gRPC :51051, kept alive via `caffeinate`) next to the gateway (:8088, `/healthz agent_runtime:true`).
+Added `python -m services.agent_runtime.run --check-llm`: one tiny LLM round-trip prints
+provider/model + latency, exits 0 (OK) / 1 (endpoint error) / 2 (no endpoint, provider=stub) — so the
+reasoner is verified in ~seconds before committing to a 20–30 min pipeline run. Cloud agent cannot
+submit `mode=agent` directly (gateway enforces `X-API-Key`); the live planning+director run is driven
+by the key holder. The agent runtime reaches the runtime via the OpenAI-compatible HTTP shim
+(`AGENT_LLM=kakeya` + `KAKEYA_ENDPOINT`); the gRPC `RuntimeService` is token-id level, not text I/O.
 
 ---
 

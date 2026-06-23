@@ -370,11 +370,39 @@ def _build_audio(narrations: list[str], music: str | None, out: str):
     subprocess.run(["ffmpeg", "-y", "-i", src, out], capture_output=True, check=True)
 
 
+def check_llm() -> int:
+    """Fast LLM-endpoint smoke test: one tiny round-trip. Verify the reasoner is reachable
+    BEFORE committing to a full (slow) pipeline run. Returns a process exit code."""
+    import time
+    llm = LLM()
+    log(f"LLM provider={llm.provider} model={llm.model or '(default)'}")
+    if llm.provider == "stub":
+        log("LLM check: provider=stub — no real endpoint configured "
+            "(set AGENT_LLM + KAKEYA_ENDPOINT/ANTHROPIC_API_KEY/OPENAI_API_KEY).")
+        return 2
+    t0 = time.time()
+    try:
+        out = llm.complete("You are a health check. Reply with exactly: OK",
+                           "Reply with the single word OK.", max_tokens=16)
+    except Exception as exc:  # noqa: BLE001
+        log(f"LLM check FAILED ({type(exc).__name__}): {exc}")
+        return 1
+    dt = time.time() - t0
+    log(f"LLM check OK in {dt:.1f}s — reply: {(out or '').strip()[:80]!r}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prompt", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--prompt", help="brief/idea to drive the pipeline")
+    ap.add_argument("--out", help="output mp4 path")
+    ap.add_argument("--check-llm", action="store_true",
+                    help="only verify the LLM endpoint round-trips, then exit (no GPU/pipeline)")
     args = ap.parse_args()
+    if args.check_llm:
+        raise SystemExit(check_llm())
+    if not args.prompt or not args.out:
+        ap.error("--prompt and --out are required (unless --check-llm)")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     run(args.prompt, args.out)
 

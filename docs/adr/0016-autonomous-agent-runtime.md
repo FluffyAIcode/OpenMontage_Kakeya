@@ -73,8 +73,13 @@ idea/script/scene_plan/assets/edit. The test asserts each scene received a **dir
 
 ## 6. Next
 
-- Deploy: set `AGENT_RUNTIME_CMD="<venv> -m services.agent_runtime.run"` + a cloud LLM key on the
-  head; live-test `mode=agent` via `agent.kakeya.ai`.
+- Deploy: set `AGENT_RUNTIME_CMD="<venv> -m services.agent_runtime.run"` + an LLM endpoint on the
+  head; live-test `mode=agent` via `agent.kakeya.ai`. **LLM endpoint smoke test:** run
+  `python -m services.agent_runtime.run --check-llm` first — one tiny round-trip prints
+  provider/model + latency and exits non-zero on failure, so the reasoner is verified before a full
+  (slow) pipeline run. With the head's Kakeya/Gemma runtime, point `AGENT_LLM=kakeya` +
+  `KAKEYA_ENDPOINT` at the OpenAI-compatible HTTP shim (the stable text surface; the gRPC
+  `RuntimeService` is token-id level).
 - Configure premium video provider for production-grade clips (the quality answer from the
   draft-vs-premium discussion).
 - Grow toward the governed pipeline (proposal/approval/reviewer, more director skills) and more
