@@ -160,9 +160,12 @@ QUALITY_PRESETS: dict[str, dict] = {
     "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
                  "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
+    # high = the true 720p generative hero path: single-chunk I2V (longform) on the CUDA i2v worker,
+    # + optical-flow (mci) smoothing. Slower (~minutes) but matches the validated quality.
     "high": {"fw_width": 512, "fw_height": 288, "fw_frames": 17, "proposer_steps": 8,
-             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
-             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "single"},
+             "refine_steps": 22, "out_width": 1280, "out_height": 720, "frames": 25,
+             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "",
+             "longform": True, "chunk_frames": 25, "chunk_overlap": 4},
 }
 
 
@@ -203,15 +206,17 @@ class VideoRequest(BaseModel):
         p["seed"] = self.seed
         p["seconds"] = self.seconds or 0.0
         p["chunks"] = self.chunks or 1
-        p["chunk_frames"] = self.chunk_frames or 25
-        p["chunk_overlap"] = self.chunk_overlap if self.chunk_overlap is not None else 4
-        # Long-form (opt-in): derive chunk count from target seconds when longform is requested.
-        if self.longform and p["chunks"] == 1 and p["seconds"] > 0:
+        p["chunk_frames"] = self.chunk_frames or p.get("chunk_frames", 25)
+        p["chunk_overlap"] = self.chunk_overlap if self.chunk_overlap is not None else p.get("chunk_overlap", 4)
+        # longform = explicit request OR preset (high). Single-chunk longform = the true-720p I2V path.
+        p["longform"] = bool(self.longform or p.get("longform", False))
+        # Long-form: derive chunk count from target seconds when longform is requested.
+        if p["longform"] and p["chunks"] == 1 and p["seconds"] > 0:
             net = max(1, p["chunk_frames"] - p["chunk_overlap"])
             want = round(p["seconds"] * p["fps"])
             if want > p["chunk_frames"]:
                 p["chunks"] = max(1, math.ceil((want - p["chunk_overlap"]) / net))
-        if p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds drives frame count
+        if not p["longform"] and p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds->frames
             p["frames"] = max(2, round(p["seconds"] * p["fps"]))
         p["quality"] = self.quality
         return p
@@ -252,9 +257,9 @@ def _run_video_job(job: Job):
         cmd += ["--seconds", str(p["seconds"])]
     if p.get("refine_mode"):  # quality preset / explicit override of refine topology
         cmd += ["--refine-mode", p["refine_mode"]]
-    if p.get("chunks", 1) > 1:  # long-form (autoregressive I2V continuity)
-        cmd += ["--chunks", str(p["chunks"]), "--chunk-frames", str(p["chunk_frames"]),
-                "--chunk-overlap", str(p["chunk_overlap"])]
+    if p.get("longform") or p.get("chunks", 1) > 1:  # I2V generative path (single or multi-chunk)
+        cmd += ["--longform", "--chunks", str(p.get("chunks", 1)),
+                "--chunk-frames", str(p["chunk_frames"]), "--chunk-overlap", str(p["chunk_overlap"])]
     if POOL_MODE:
         cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
     elif GW_MODE == "pipeline":
@@ -412,15 +417,32 @@ pre{white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:auto;ba
   border:1px solid #1c2942;border-radius:10px;padding:12px;font-size:12.5px;color:#a9c2e6}
 video{width:100%;border-radius:12px;margin-top:12px;background:#000}
 input[type=password]{padding:10px;border-radius:8px;border:1px solid #2a3a59;background:#0e1830;color:#e7eefc}
+select{padding:10px;border-radius:8px;border:1px solid #2a3a59;background:#0e1830;color:#e7eefc;font:inherit}
+label{color:#8fa6c8;font-size:13px;display:block;margin-bottom:4px}
+.opts{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}
 </style></head><body><div class="wrap">
 <h1>OpenMontage — Agent Video</h1>
-<p class="sub">Describe a clip. The distributed cluster (MLX proposer + CUDA refiner) renders it.</p>
+<p class="sub">Describe a clip. The distributed cluster (MLX proposer + CUDA / I2V refiner) renders it.</p>
 <textarea id="p" placeholder="a red fox walking through a snowy forest, cinematic, soft winter light"></textarea>
+<div class="opts">
+  <div><label>Quality</label>
+    <select id="q">
+      <option value="high" selected>High — 720p generative (I2V) · ~3–4 min</option>
+      <option value="standard">Standard — ~480p · ~1–2 min</option>
+      <option value="draft">Draft — fast preview</option>
+    </select></div>
+  <div><label>Length</label>
+    <select id="len">
+      <option value="short" selected>Short (~2 s)</option>
+      <option value="5">Longer (~5 s, multi-shot)</option>
+      <option value="8">Long (~8 s, multi-shot)</option>
+    </select></div>
+</div>
 <div class="row">
   <button id="go">Generate</button>
   <input id="key" type="password" placeholder="API key (if required)" style="flex:1;min-width:160px">
 </div>
-<p class="muted">Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.</p>
+<p class="muted"><b>High</b> = native 720p generative (I2V) — best quality, a few minutes. <b>Standard</b> = fast ~480p draft. Longer = multi-shot I2V continuity (minutes × shots).</p>
 <div class="card" id="status" style="display:none">
   <div id="stage" class="muted">queued…</div>
   <div class="bar"><i id="fill"></i></div>
@@ -445,7 +467,9 @@ $('go').onclick=async()=>{
   $('go').disabled=true;$('status').style.display='block';$('vid').style.display='none';
   $('stage').textContent='submitting…';$('fill').style.width='0';$('log').textContent='';
   const h={'Content-Type':'application/json'}; const k=$('key').value.trim(); if(k)h['X-API-Key']=k;
-  const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify({prompt})});
+  const body={prompt, quality:$('q').value};
+  const len=$('len').value; if(len!=='short'){body.longform=true; body.seconds=parseFloat(len);}
+  const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify(body)});
   if(!r.ok){$('go').disabled=false;$('stage').textContent='error: '+r.status+' '+(await r.text());return;}
   const {job_id}=await r.json();
   timer=setInterval(()=>poll(job_id),2500);poll(job_id);

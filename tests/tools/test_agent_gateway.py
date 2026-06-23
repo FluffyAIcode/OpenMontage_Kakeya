@@ -33,6 +33,7 @@ def client(tmp_path, monkeypatch):
         "    ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
+        "ap.add_argument('--longform',action='store_true')\n"
         "ap.add_argument('--refine-spread')\n"
         "x=ap.parse_args()\n"
         "print('[orch]   framework:    5%',flush=True)\n"
@@ -125,8 +126,9 @@ def _mode_fixture(tmp_path, monkeypatch, *, workers, mode_env):
         "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--refine-spread','--fps','--interpolate','--interp-method','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
+        "ap.add_argument('--longform',action='store_true')\n"
         "x=ap.parse_args()\n"
-        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS',''),'fps':x.fps,'interpolate':x.interpolate,'interp_method':x.interp_method,'refine_mode':x.refine_mode,'out_width':x.out_width,'frames':x.frames,'seconds':x.seconds,'refine_steps':x.refine_steps,'chunks':x.chunks,'chunk_frames':x.chunk_frames,'chunk_overlap':x.chunk_overlap}\n"
+        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS',''),'fps':x.fps,'interpolate':x.interpolate,'interp_method':x.interp_method,'refine_mode':x.refine_mode,'out_width':x.out_width,'frames':x.frames,'seconds':x.seconds,'refine_steps':x.refine_steps,'chunks':x.chunks,'chunk_frames':x.chunk_frames,'chunk_overlap':x.chunk_overlap,'longform':x.longform}\n"
         "print('[orch]   refine:  100%',flush=True)\n"
         "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'MODEMP4')\n"
         "print('FLAGS '+json.dumps(flags),flush=True)\n"
@@ -195,8 +197,9 @@ def test_quality_presets(tmp_path, monkeypatch):
     # high: seam-free full-frame generative refine on the best refiner, hi-res, smoother
     fh = _job_flags(c, c.post("/v1/videos", json={"prompt": "hero clip", "quality": "high"}).json()["job_id"])
     assert fh["out_width"] == "1280" and fh["fps"] == "24" and fh["interpolate"] == "2"
-    assert fh["refine_mode"] == "single" and fh["refine_steps"] == "24"
-    assert fh["interp_method"] == "mci"   # high uses optical-flow interpolation
+    assert fh["interp_method"] == "mci"          # high uses optical-flow interpolation
+    assert fh["longform"] is True                # high = true 720p I2V generative path
+    assert fh["refine_mode"] is None             # longform supersedes refine topology
     # draft: proposer-only direct
     fd = _job_flags(c, c.post("/v1/videos", json={"prompt": "draft clip", "quality": "draft"}).json()["job_id"])
     assert fd["refine_mode"] == "direct"
@@ -252,6 +255,7 @@ def test_pool_mode_two_macs(tmp_path, monkeypatch):
         "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--interp-method','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
+        "ap.add_argument('--longform',action='store_true')\n"
         "ap.add_argument('--refine-spread')\n"
         "x=ap.parse_args()\n"
         "assert x.no_refine, 'pool mode must pass --no-refine'\n"

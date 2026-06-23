@@ -227,6 +227,9 @@ def main():
                     help="interpolation: 'linear' (blend) or 'mci' (ffmpeg motion-compensated / "
                          "optical-flow — RIFE-class smoothness; falls back to linear if unavailable).")
     # Long-form (ADR 0015 Phase 2): chunked autoregressive generation with I2V continuity.
+    ap.add_argument("--longform", action="store_true",
+                    help="force the I2V generative path even for a single chunk (chunks=1) — the "
+                         "true-720p hero path on an i2v worker. >1 chunks is multi-chunk continuity.")
     ap.add_argument("--chunks", type=int, default=1,
                     help=">1 enables long-form: N chunks generated autoregressively (chunk N+1 seeded "
                          "by the last frame of chunk N via I2V) and crossfade-stitched.")
@@ -250,7 +253,8 @@ def main():
     # seeded by the last frame of chunk N via I2V (continuity), then crossfade-stitched. Runs on an
     # i2v-capable worker (the CUDA box with CUDA_I2V_MODEL); falls back to independent T2V chunks
     # (no continuity) with a warning if no i2v worker is present.
-    if args.chunks > 1:
+    if args.longform or args.chunks > 1:
+        args.chunks = max(1, args.chunks)
         i2v_workers = [w for w in workers if "i2v" in w.ops]
         cont = bool(i2v_workers)
         ow, oh = args.out_width, args.out_height
