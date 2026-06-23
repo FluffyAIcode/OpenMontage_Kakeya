@@ -1122,6 +1122,30 @@ auto-recovery. (Caveat: the ~84 G I2V model re-downloads unless `HF_HOME` is on 
 
 ---
 
+## Iteration 40 — Gap A closed: deploy PR#5 to agent.kakeya.ai + wire quality=high → true 720p I2V
+
+**Honesty correction:** Iter 36–39 results were from DIRECT orchestrator runs. The live public gateway
+was still PR#4 (no presets/refine-mode/chunks/mci) — confirmed by `grep` on the deployed code +
+`healthz mode=distributed`. So `agent.kakeya.ai` was serving distributed-tiled (~480p mix), NOT the
+720p I2V I had summarized. Owned + fixed.
+
+**Deployed:** head repo → `main` (PR#5) then the `quality=high→I2V` follow-up; gateway restarted.
+Wired `quality=high` to the **true-720p hero path**: orchestrator `--longform` forces the I2V
+generative path even at chunks=1; `high` preset → `longform=True` (+ mci x2). Multi-chunk continuity
+via `chunks=N` / `longform+seconds`.
+
+**Verified through the PUBLIC endpoint** (`agent.kakeya.ai`, not direct):
+- multi-chunk: `{chunks:2,out 1280x720}` → `mode=longform continuity=i2v px=[720,1280] frames=46` →
+  public download ffprobe **h264 1280×720, 46f, 2.875s**.
+- one-flag hero: `{quality:"high"}` → `mode=longform chunks=1 px=[720,1280] frames=47` → public
+  ffprobe **h264 1280×720, 47f, 1.96s**, gen≈211 s.
+
+**Honest tiers now:** default/`standard` = fast distributed tiled (~480p, ~2 s); `high` = true 720p I2V
+generative + optical-flow (~3.5 min); `longform`/`chunks` = multi-chunk continuity (minutes×N). Gap B
+(full OpenMontage agent + all skills behind the gateway; `agent_runtime=false`) remains — separate plan.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
