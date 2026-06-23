@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import re
@@ -183,6 +184,11 @@ class VideoRequest(BaseModel):
     out_width: Optional[int] = None
     out_height: Optional[int] = None
     refine_mode: Optional[str] = Field(None, pattern="^(auto|direct|single|tiled)$")
+    # Long-form (ADR 0015 Phase 2): chunks>1 (or longform=true + seconds) = autoregressive I2V gen.
+    longform: bool = False
+    chunks: Optional[int] = Field(None, ge=1, le=20)
+    chunk_frames: Optional[int] = None
+    chunk_overlap: Optional[int] = Field(None, ge=0, le=12)
     seed: int = 11
 
     def resolved(self) -> dict:
@@ -195,7 +201,16 @@ class VideoRequest(BaseModel):
                 p[k] = v
         p["seed"] = self.seed
         p["seconds"] = self.seconds or 0.0
-        if p["seconds"] > 0:  # duration drives frame count
+        p["chunks"] = self.chunks or 1
+        p["chunk_frames"] = self.chunk_frames or 25
+        p["chunk_overlap"] = self.chunk_overlap if self.chunk_overlap is not None else 4
+        # Long-form (opt-in): derive chunk count from target seconds when longform is requested.
+        if self.longform and p["chunks"] == 1 and p["seconds"] > 0:
+            net = max(1, p["chunk_frames"] - p["chunk_overlap"])
+            want = round(p["seconds"] * p["fps"])
+            if want > p["chunk_frames"]:
+                p["chunks"] = max(1, math.ceil((want - p["chunk_overlap"]) / net))
+        if p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds drives frame count
             p["frames"] = max(2, round(p["seconds"] * p["fps"]))
         p["quality"] = self.quality
         return p
@@ -235,6 +250,9 @@ def _run_video_job(job: Job):
         cmd += ["--seconds", str(p["seconds"])]
     if p.get("refine_mode"):  # quality preset / explicit override of refine topology
         cmd += ["--refine-mode", p["refine_mode"]]
+    if p.get("chunks", 1) > 1:  # long-form (autoregressive I2V continuity)
+        cmd += ["--chunks", str(p["chunks"]), "--chunk-frames", str(p["chunk_frames"]),
+                "--chunk-overlap", str(p["chunk_overlap"])]
     if POOL_MODE:
         cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
     elif GW_MODE == "pipeline":

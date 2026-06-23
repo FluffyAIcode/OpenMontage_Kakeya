@@ -103,6 +103,31 @@ def _ramp(n):
     return np.minimum(np.arange(n), np.arange(n)[::-1]) + 1.0
 
 
+def _png_bytes(frame):
+    buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG"); return buf.getvalue()
+
+
+def _stitch(clips, overlap):
+    """Concatenate chunks with an `overlap`-frame crossfade so chunk boundaries don't jump-cut.
+
+    Total frames = sum(len(clip)) - (len(clips)-1)*overlap (ADR 0015 Phase 2 long-form)."""
+    if len(clips) == 1:
+        return clips[0]
+    out = clips[0]
+    for c in clips[1:]:
+        ov = min(overlap, out.shape[0], c.shape[0])
+        if ov > 0:
+            blended = []
+            for k in range(ov):
+                t = (k + 1) / (ov + 1)
+                a = out[out.shape[0] - ov + k].astype(np.float32); b = c[k].astype(np.float32)
+                blended.append((a * (1.0 - t) + b * t).round().astype(np.uint8))
+            out = np.concatenate([out[:out.shape[0] - ov], np.stack(blended), c[ov:]], axis=0)
+        else:
+            out = np.concatenate([out, c], axis=0)
+    return out
+
+
 def _consume(stream, label):
     mp4, gen_s = None, 0.0
     for p in stream:
@@ -167,6 +192,12 @@ def main():
                          "resample of the proposer; true long-form chunking is Phase 2).")
     ap.add_argument("--interpolate", type=int, default=1,
                     help="temporal interpolation factor (x2/x4) for smoother motion / higher fps.")
+    # Long-form (ADR 0015 Phase 2): chunked autoregressive generation with I2V continuity.
+    ap.add_argument("--chunks", type=int, default=1,
+                    help=">1 enables long-form: N chunks generated autoregressively (chunk N+1 seeded "
+                         "by the last frame of chunk N via I2V) and crossfade-stitched.")
+    ap.add_argument("--chunk-frames", type=int, default=25, help="frames generated per chunk")
+    ap.add_argument("--chunk-overlap", type=int, default=4, help="crossfade frames between chunks")
     ap.add_argument("--out", default="distributed_wan_grpc.mp4")
     args = ap.parse_args()
     if args.seconds and args.seconds > 0:
@@ -180,6 +211,39 @@ def main():
     refine_workers = [w for w in workers if "refine" in w.ops]
     if not fw_workers:
         raise SystemExit("no framework-capable worker")
+
+    # LONG-FORM (ADR 0015 Phase 2): chunked autoregressive generation. chunk0 = T2V; chunk N+1 is
+    # seeded by the last frame of chunk N via I2V (continuity), then crossfade-stitched. Runs on an
+    # i2v-capable worker (the CUDA box with CUDA_I2V_MODEL); falls back to independent T2V chunks
+    # (no continuity) with a warning if no i2v worker is present.
+    if args.chunks > 1:
+        i2v_workers = [w for w in workers if "i2v" in w.ops]
+        gen = max(i2v_workers, key=lambda w: w.speed) if i2v_workers else max(fw_workers, key=lambda w: w.speed)
+        cont = "i2v" in gen.ops
+        print(f"[orch] LONG-FORM on {gen.addr}({gen.backend}) — {args.chunks}x{args.chunk_frames}f "
+              f"@ {args.out_width}x{args.out_height}, overlap={args.chunk_overlap}, "
+              f"continuity={'I2V' if cont else 'OFF (no i2v worker)'}", flush=True)
+        clips, init_png, total_gs = [], b"", 0.0
+        for c in range(args.chunks):
+            mp4, gs = _consume(gen.stub.GenerateFramework(pb.FrameworkRequest(
+                prompt=args.prompt, width=args.out_width, height=args.out_height,
+                num_frames=args.chunk_frames, steps=args.refine_steps, seed=args.seed + c,
+                init_image=(init_png if cont else b""))), f"chunk{c}")
+            frames = _mp4_to_frames(mp4)
+            clips.append(frames); total_gs += gs
+            if cont:
+                init_png = _png_bytes(frames[-1])
+            print(f"[orch]   chunk {c} {frames.shape} in {gs:.1f}s", flush=True)
+        stitched = _stitch(clips, args.chunk_overlap)
+        nout = _encode(stitched, args.out, args.fps, args.interpolate)
+        import json
+        print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "longform",
+                                         "generator": gen.addr, "continuity": "i2v" if cont else "off",
+                                         "chunks": args.chunks, "out": args.out, "gen_seconds": round(total_gs, 2),
+                                         "px": [int(stitched.shape[1]), int(stitched.shape[2])],
+                                         "fps": args.fps, "interpolate": args.interpolate,
+                                         "seconds": round(nout / max(args.fps, 1), 2), "frames": nout}), flush=True)
+        return
 
     # DIRECT (no-refine) mode: one T2V generation on the framework worker, no tiled refine.
     # This is the Mac-only / single-GPU path (mlx-video has no vid2vid). Auto-enabled when no
@@ -225,7 +289,11 @@ def main():
         F = framework.shape[0]
         t_idx = (np.round(np.linspace(0, F - 1, args.frames)).astype(int)
                  if F != args.frames else np.arange(args.frames))
-        proposer = np.stack([framework[t_idx[i]] for i in range(args.frames)])
+        # Upscale the proposer to the TARGET resolution before refine. The CUDA V2V pipeline keeps
+        # its INPUT resolution, so to get high-res generative detail the input must already be at
+        # out_w x out_h (MLX SR also honors this). This is what makes 'high'/single truly hi-res.
+        proposer = np.stack([np.asarray(Image.fromarray(framework[t_idx[i]]).resize(
+            (args.out_width, args.out_height), Image.BICUBIC)) for i in range(args.frames)])
         mp4b, rg = _consume(refiner.stub.RefineTile(pb.RefineRequest(
             prompt=args.prompt, mp4=_frames_to_mp4_bytes(proposer),
             width=args.out_width, height=args.out_height, num_frames=args.frames,

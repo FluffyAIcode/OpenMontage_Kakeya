@@ -124,6 +124,39 @@ def test_orchestrator_single_refine_pipeline(tmp_path):
         prop.stop(0); refn.stop(0)
 
 
+def test_stitch_helper():
+    """_stitch concatenates chunks with crossfade: total = sum(len) - (k-1)*overlap."""
+    import grpc_orchestrator as orch
+    a = np.zeros((10, 8, 8, 3), np.uint8); b = np.zeros((10, 8, 8, 3), np.uint8); cc = np.zeros((10, 8, 8, 3), np.uint8)
+    assert orch._stitch([a], 4).shape[0] == 10
+    assert orch._stitch([a, b], 4).shape[0] == 16           # 20 - 4
+    assert orch._stitch([a, b, cc], 4).shape[0] == 22       # 30 - 2*4
+    assert orch._stitch([a, b], 0).shape[0] == 20           # no overlap
+
+
+def test_orchestrator_longform_chunks(tmp_path):
+    """--chunks 3 on an i2v-capable worker -> autoregressive generation + crossfade stitch."""
+    gen, p_gen = _serve(["framework", "t2v", "i2v"])  # TestBackend advertises i2v
+    import time as _t
+    _t.sleep(0.5)
+    try:
+        out = tmp_path / "long.mp4"
+        env = {**os.environ, "WAN_WORKERS": f"127.0.0.1:{p_gen}"}
+        proc = subprocess.run(
+            [sys.executable, str(DWAN / "grpc_orchestrator.py"), "--prompt", "a flythrough",
+             "--chunks", "3", "--chunk-frames", "9", "--chunk-overlap", "2",
+             "--out-width", "64", "--out-height", "48", "--fps", "12", "--out", str(out)],
+            env=env, capture_output=True, text=True, timeout=120)
+        assert out.exists(), proc.stdout + proc.stderr
+        info = json.loads([l for l in proc.stdout.splitlines() if l.startswith("ORCH_DONE")][-1].split(" ", 1)[1])
+        assert info["mode"] == "longform"
+        assert info["chunks"] == 3 and info["continuity"] == "i2v"
+        assert info["frames"] == 9 * 3 - 2 * 2   # 23: sum - (k-1)*overlap
+        assert info["px"] == [48, 64]
+    finally:
+        gen.stop(0)
+
+
 def test_orchestrator_refine_mode_single_fps_interp(tmp_path):
     """--refine-mode single (quality path) + --fps/--interpolate: forces a seam-free full-frame
     refine on the best refiner and the output frame count reflects interpolation."""

@@ -29,7 +29,7 @@ def client(tmp_path, monkeypatch):
         "import argparse,json,pathlib\n"
         "ap=argparse.ArgumentParser()\n"
         "for a in ['--prompt','--out']: ap.add_argument(a)\n"
-        "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--refine-mode','--seconds']:\n"
+        "for a in ['--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']:\n"
         "    ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
@@ -122,11 +122,11 @@ def _mode_fixture(tmp_path, monkeypatch, *, workers, mode_env):
     fake.write_text(
         "import argparse,json,os,pathlib\n"
         "ap=argparse.ArgumentParser()\n"
-        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--refine-spread','--fps','--interpolate','--refine-mode','--seconds']: ap.add_argument(a)\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--refine-spread','--fps','--interpolate','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
         "x=ap.parse_args()\n"
-        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS',''),'fps':x.fps,'interpolate':x.interpolate,'refine_mode':x.refine_mode,'out_width':x.out_width,'frames':x.frames,'seconds':x.seconds,'refine_steps':x.refine_steps}\n"
+        "flags={'single_refine':x.single_refine,'no_refine':x.no_refine,'refine_spread':x.refine_spread,'workers':os.environ.get('WAN_WORKERS',''),'fps':x.fps,'interpolate':x.interpolate,'refine_mode':x.refine_mode,'out_width':x.out_width,'frames':x.frames,'seconds':x.seconds,'refine_steps':x.refine_steps,'chunks':x.chunks,'chunk_frames':x.chunk_frames,'chunk_overlap':x.chunk_overlap}\n"
         "print('[orch]   refine:  100%',flush=True)\n"
         "p=pathlib.Path(x.out); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b'MODEMP4')\n"
         "print('FLAGS '+json.dumps(flags),flush=True)\n"
@@ -210,6 +210,19 @@ def test_duration_seconds_and_overrides(tmp_path, monkeypatch):
     assert f["seconds"] == "4.0" and f["frames"] == "64"  # 4s * 16fps
 
 
+def test_longform_chunks_explicit_and_from_seconds(tmp_path, monkeypatch):
+    """chunks>1 enables long-form; seconds beyond one chunk auto-derives the chunk count."""
+    c, server = _mode_fixture(tmp_path, monkeypatch, workers="10.0.0.1:50051,10.0.0.2:50051", mode_env="auto")
+    # explicit chunks
+    f = _job_flags(c, c.post("/v1/videos", json={"prompt": "a long pan over mountains",
+                                                 "chunks": 3, "chunk_frames": 25, "chunk_overlap": 4}).json()["job_id"])
+    assert f["chunks"] == "3" and f["chunk_frames"] == "25" and f["chunk_overlap"] == "4"
+    # longform + seconds -> derived chunks: 8s * 12fps = 96 frames; net=25-4=21 -> ceil((96-4)/21)=5
+    f2 = _job_flags(c, c.post("/v1/videos", json={"prompt": "an 8 second flythrough",
+                                                  "longform": True, "seconds": 8}).json()["job_id"])
+    assert f2["chunks"] == "5"
+
+
 def test_dynamic_workers_file_membership(tmp_path, monkeypatch):
     """AGENT_GATEWAY_WORKERS_FILE -> live membership: an ephemeral vast refiner can be added/removed
     by rewriting the file, with NO gateway restart. Falls back to WAN_WORKERS when unreadable."""
@@ -235,7 +248,7 @@ def test_pool_mode_two_macs(tmp_path, monkeypatch):
     fake.write_text(
         "import argparse,json,pathlib,time\n"
         "ap=argparse.ArgumentParser()\n"
-        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--refine-mode','--seconds']: ap.add_argument(a)\n"
+        "for a in ['--prompt','--out','--frames','--fw-width','--fw-height','--fw-frames','--proposer-steps','--refine-steps','--seed','--out-width','--out-height','--fps','--interpolate','--refine-mode','--seconds','--chunks','--chunk-frames','--chunk-overlap']: ap.add_argument(a)\n"
         "ap.add_argument('--no-refine',action='store_true')\n"
         "ap.add_argument('--single-refine',action='store_true')\n"
         "ap.add_argument('--refine-spread')\n"
