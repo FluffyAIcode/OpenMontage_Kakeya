@@ -31,9 +31,18 @@ New module `services/agent_runtime/` exposed as `AGENT_RUNTIME_CMD`
   - LLM produces **brief → script → scene_plan** (each schema-validated via `schemas.artifacts`
     and checkpointed via `lib/checkpoint`, exactly like the governed pipeline; director-skill text
     is loaded as LLM context — "intelligence in the skills").
+  - **prompt director** (`direct_video_prompt`): before each clip, the LLM rewrites the scene
+    description into ONE rich, model-appropriate **native-T2V** prompt (subject+action+setting+
+    lighting+camera+style, ~40–70 words, positive phrasing). Guidance is the **Layer-3 skill the
+    video provider advertises** (`_resolve_video_skill` reads the provider's `agent_skills`, e.g.
+    `ai-video-gen`/`ltx2`, from `.agents/skills` or `.claude/skills`) — i.e. it activates the prompt-
+    director knowledge OpenMontage already ships rather than inventing a new one. This is the
+    cross-attention insight from ADR 0015: enrich the text condition and hand a strong prompt to T2V,
+    instead of refining a weak low-res seed via I2V. Directed prompts are persisted to
+    `assets/director_prompts.json` for transparency. Needs no video GPU — runs as soon as the LLM is up.
   - assets: per-scene video via **`video_selector`** (auto-routes to the BEST available provider —
-    premium Seedance/Kling/Veo if configured, else the local WAN draft cluster), narration via
-    **`tts_selector`**, one music track via **`music_gen`** (skipped when unconfigured).
+    premium Seedance/Kling/Veo if configured, else the local WAN draft cluster) using the **directed**
+    prompt, narration via **`tts_selector`**, one music track via **`music_gen`** (skipped when unconfigured).
   - deterministic **edit_decisions** → **`audio_mixer`** + **`video_compose`** (ffmpeg) → final mp4.
 - `AGENT_RUNTIME_FAKE_ASSETS=1` swaps providers for ffmpeg fixtures so the harness is CI-testable
   with no keys/GPU.
@@ -57,9 +66,10 @@ agent uses a cloud LLM (light CPU/network) — it does **not** steal GPU from vi
 ## 5. Validation
 
 `tests/tools/test_agent_runtime.py` (offline, no keys/GPU): stub LLM emits valid brief/script/
-scene_plan; `AGENT_RUNTIME_FAKE_ASSETS=1` → full plumbing (plan → validate → checkpoint → per-scene
-assets → audio mix → ffmpeg compose) → **valid h264 mp4** + checkpoints for idea/script/scene_plan/
-assets/edit. JSON-extraction unit test. 2 pass (23 with gateway+pipeline suites).
+scene_plan; `AGENT_RUNTIME_FAKE_ASSETS=1` → full plumbing (plan → validate → **prompt director** →
+checkpoint → per-scene assets → audio mix → ffmpeg compose) → **valid h264 mp4** + checkpoints for
+idea/script/scene_plan/assets/edit. The test asserts each scene received a **directed** prompt
+(enriched, `!= raw` description) via `director_prompts.json`. JSON-extraction unit test. 2 pass.
 
 ## 6. Next
 

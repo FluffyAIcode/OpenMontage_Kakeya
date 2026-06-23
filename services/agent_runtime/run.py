@@ -85,6 +85,75 @@ def _skill(path: str) -> str:
     return ""
 
 
+def _skill_named(name: str) -> str:
+    """Read a named Layer-3 skill (SKILL.md) from the skills trees (truncated)."""
+    for base in (REPO / ".agents" / "skills", REPO / ".claude" / "skills"):
+        cand = base / name / "SKILL.md"
+        try:
+            return cand.read_text()
+        except OSError:
+            continue
+    return ""
+
+
+def _resolve_video_skill(registry) -> str:
+    """Layer-3 prompting guidance for the active video provider.
+
+    OpenMontage already ships the "prompt director" knowledge as Layer-3 skills (ai-video-gen,
+    ltx2, seedance-2-0, ...). The agent reads the skill(s) advertised by the video provider that
+    `video_selector` routes to and feeds them to the LLM so per-scene prompts are written the way
+    that model wants — instead of passing a bare scene description to the generator."""
+    names: list[str] = []
+    sel = registry.get("video_selector")
+    if sel is not None:
+        try:
+            info = sel.get_info()
+            # If the selector can name the provider it would route to, prefer that provider's skill.
+            chosen = info.get("selected_tool") or info.get("provider")
+            if chosen:
+                prov = registry.get(chosen)
+                if prov is not None:
+                    names = list(getattr(prov, "agent_skills", []) or [])
+            if not names:
+                names = list(info.get("agent_skills", []) or [])
+        except Exception:  # noqa: BLE001
+            pass
+    if not names:
+        names = ["ai-video-gen"]
+    txt = ""
+    for n in names[:2]:
+        s = _skill_named(n)
+        if s:
+            txt += f"\n# Provider guidance: {n}\n{s[:4500]}\n"
+    return txt[:8000]
+
+
+def direct_video_prompt(llm: LLM, scene_desc: str, brief: dict, skill_text: str) -> str:
+    """LLM "prompt director": rewrite a scene into ONE rich, model-appropriate T2V prompt.
+
+    Native T2V conditions generation via cross-attention over the text embeddings, so a longer,
+    concrete, positive prompt (subject+action+setting+lighting+camera+style) yields a far stronger
+    result than a bare scene description. Guidance comes from the provider's Layer-3 skill."""
+    if not scene_desc:
+        return scene_desc
+    sys_p = (
+        "You are OpenMontage's video prompt director. Rewrite the scene into ONE rich, concrete "
+        "text-to-video prompt for a native text-to-video model. Include subject, action, setting, "
+        "lighting, camera framing/movement, and style. Be vivid and specific, ~40-70 words, fully "
+        "positive phrasing (describe what to SHOW, never what to avoid), no contradictions. "
+        "Output ONLY the prompt text — no quotes, no JSON, no preamble." + skill_text
+    )
+    user = (f"Scene: {scene_desc}\nOverall tone: {brief.get('tone', '')}\n"
+            f"Style: {brief.get('style', '')}\nTitle: {brief.get('title', '')}")
+    try:
+        out = llm.complete(sys_p, user)
+    except Exception as exc:  # noqa: BLE001
+        log(f"prompt-director fallback (raw scene): {exc}")
+        return scene_desc
+    out = " ".join((out or "").strip().strip('"').strip("`").split())
+    return out[:600] or scene_desc
+
+
 # --------------------------------------------------------------------------- #
 # asset helpers (real providers via the registry, or ffmpeg fixtures for tests)
 # --------------------------------------------------------------------------- #
@@ -212,12 +281,17 @@ def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None 
 
     # 4) assets: per-scene video (video_selector -> best provider) + narration; one music track
     sect_by_id = {s["id"]: s for s in script.get("sections", [])}
-    asset_list, cuts = [], []
+    vskill = _resolve_video_skill(registry)
+    log(f"prompt-director: loaded provider guidance ({len(vskill)} chars)")
+    asset_list, cuts, director_prompts = [], [], []
     for i, sc in enumerate(scenes):
         dur = max(2.0, float(sc.get("end_seconds", 0)) - float(sc.get("start_seconds", 0)) or 5.0)
         vid = str(assets / f"scene_{i}.mp4")
-        log(f"scene {i}: generating clip ({dur:.0f}s) — {sc.get('description','')[:60]}")
-        vid = generate_clip(registry, sc.get("description", prompt), vid, dur, i)
+        raw = sc.get("description", prompt)
+        vprompt = direct_video_prompt(llm, raw, brief, vskill)
+        director_prompts.append({"scene_id": sc.get("id", f"sc{i}"), "raw": raw, "prompt": vprompt})
+        log(f"scene {i}: directed prompt — {vprompt[:80]}")
+        vid = generate_clip(registry, vprompt, vid, dur, i)
         asset_list.append({"id": f"v{i}", "type": "video", "path": vid, "source_tool": "video_selector",
                            "scene_id": sc.get("id", f"sc{i}")})
         cuts.append({"id": f"cut{i}", "source": vid, "in_seconds": 0.0, "out_seconds": dur, "speed": 1.0})
@@ -237,6 +311,10 @@ def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None 
                            "scene_id": scenes[0].get("id", "sc0") if scenes else "sc0"})
     asset_manifest = {"version": "1.0", "assets": asset_list}
     validate_artifact("asset_manifest", asset_manifest); ck("assets", {"asset_manifest": asset_manifest})
+    try:
+        (assets / "director_prompts.json").write_text(json.dumps(director_prompts, indent=2))
+    except OSError:
+        pass
 
     # 5) edit_decisions (deterministic: clips in order, ffmpeg runtime)
     narrations = [a["path"] for a in asset_list if a["type"] == "narration"]

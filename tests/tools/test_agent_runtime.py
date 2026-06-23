@@ -26,6 +26,10 @@ if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
 
 def _stub(system: str, user: str) -> str:
     s = system[:120].lower()  # match the prompt PREFIX, before appended skill text
+    if "video prompt director" in s:
+        # echo the raw scene so the test can verify the DIRECTED prompt is what reaches the generator
+        scene = user.split("\n", 1)[0].removeprefix("Scene: ").strip()
+        return f"directed cinematic shot, {scene}, golden hour rim light, slow dolly-in, 35mm film"
     if "scene director" in s:
         return json.dumps({"version": "1.0", "scenes": [
             {"id": "sc1", "type": "generated", "description": "a red fox walking into a snowy forest, cinematic",
@@ -70,6 +74,12 @@ def test_agent_runtime_end_to_end(tmp_path, monkeypatch):
     names = {c.stem for c in cks}
     assert {"checkpoint_idea", "checkpoint_script", "checkpoint_scene_plan",
             "checkpoint_assets", "checkpoint_edit"} <= names, names
+    # prompt-director step ran: each scene got a DIRECTED prompt (enriched, != raw description)
+    dp = json.loads((tmp_path / "proj" / "assets" / "director_prompts.json").read_text())
+    assert len(dp) == 2, dp
+    for entry in dp:
+        assert entry["prompt"].startswith("directed cinematic shot, "), entry
+        assert entry["prompt"] != entry["raw"], entry
 
 
 def test_llm_json_extraction():

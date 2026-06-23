@@ -1165,6 +1165,32 @@ WAN-14B vs Hunyuan VRAM (load-on-demand); wire Hunyuan-I2V for continuity.
 
 ---
 
+## Iteration 43 — agent runtime: LLM "prompt director" step (ADR 0016, per user)
+
+The user clarified the "LLM prompt director" is **already in OpenMontage's architecture** (the
+Layer-3 video skills) and asked to keep executing the agent-runtime integration per ADR 0016 —
+i.e. *activate* that existing knowledge, not invent a new step. Implemented in
+`services/agent_runtime/run.py`:
+
+- **`_resolve_video_skill(registry)`** — reads the `agent_skills` advertised by the video provider
+  `video_selector` routes to (e.g. `ai-video-gen`/`ltx2`) from `.agents/skills` or `.claude/skills`,
+  and feeds that prompting guidance to the LLM. So per-scene prompts are written the way the chosen
+  model wants, sourced from the skills OpenMontage already ships.
+- **`direct_video_prompt(llm, scene, brief, skill)`** — rewrites each scene description into ONE
+  rich native-T2V prompt (subject+action+setting+lighting+camera+style, ~40–70 words, positive
+  phrasing). This is the cross-attention insight from ADR 0015: **enrich the text condition and
+  hand a strong prompt to native T2V** instead of refining a weak low-res seed via I2V. Falls back
+  to the raw scene on any LLM error. Needs **no video GPU** — runs as soon as the LLM is up.
+- Directed prompts are persisted to `assets/director_prompts.json` for transparency; the assets
+  loop now generates from the **directed** prompt (not the bare scene description).
+
+**Validation (offline, no keys/GPU):** `tests/tools/test_agent_runtime.py` extended — the stub LLM
+handles the "video prompt director" system prompt and the test asserts each scene received a
+directed prompt (`startswith "directed cinematic shot, "`, `!= raw`) via `director_prompts.json`.
+`2 passed`. Still blocked on a live head LLM endpoint (Kakeya/Gemma) for the real `mode=agent` run.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
