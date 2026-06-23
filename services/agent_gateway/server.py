@@ -160,9 +160,12 @@ QUALITY_PRESETS: dict[str, dict] = {
     "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
                  "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
+    # high = the true 720p generative hero path: single-chunk I2V (longform) on the CUDA i2v worker,
+    # + optical-flow (mci) smoothing. Slower (~minutes) but matches the validated quality.
     "high": {"fw_width": 512, "fw_height": 288, "fw_frames": 17, "proposer_steps": 8,
-             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
-             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "single"},
+             "refine_steps": 22, "out_width": 1280, "out_height": 720, "frames": 25,
+             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "",
+             "longform": True, "chunk_frames": 25, "chunk_overlap": 4},
 }
 
 
@@ -203,15 +206,17 @@ class VideoRequest(BaseModel):
         p["seed"] = self.seed
         p["seconds"] = self.seconds or 0.0
         p["chunks"] = self.chunks or 1
-        p["chunk_frames"] = self.chunk_frames or 25
-        p["chunk_overlap"] = self.chunk_overlap if self.chunk_overlap is not None else 4
-        # Long-form (opt-in): derive chunk count from target seconds when longform is requested.
-        if self.longform and p["chunks"] == 1 and p["seconds"] > 0:
+        p["chunk_frames"] = self.chunk_frames or p.get("chunk_frames", 25)
+        p["chunk_overlap"] = self.chunk_overlap if self.chunk_overlap is not None else p.get("chunk_overlap", 4)
+        # longform = explicit request OR preset (high). Single-chunk longform = the true-720p I2V path.
+        p["longform"] = bool(self.longform or p.get("longform", False))
+        # Long-form: derive chunk count from target seconds when longform is requested.
+        if p["longform"] and p["chunks"] == 1 and p["seconds"] > 0:
             net = max(1, p["chunk_frames"] - p["chunk_overlap"])
             want = round(p["seconds"] * p["fps"])
             if want > p["chunk_frames"]:
                 p["chunks"] = max(1, math.ceil((want - p["chunk_overlap"]) / net))
-        if p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds drives frame count
+        if not p["longform"] and p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds->frames
             p["frames"] = max(2, round(p["seconds"] * p["fps"]))
         p["quality"] = self.quality
         return p
@@ -252,9 +257,9 @@ def _run_video_job(job: Job):
         cmd += ["--seconds", str(p["seconds"])]
     if p.get("refine_mode"):  # quality preset / explicit override of refine topology
         cmd += ["--refine-mode", p["refine_mode"]]
-    if p.get("chunks", 1) > 1:  # long-form (autoregressive I2V continuity)
-        cmd += ["--chunks", str(p["chunks"]), "--chunk-frames", str(p["chunk_frames"]),
-                "--chunk-overlap", str(p["chunk_overlap"])]
+    if p.get("longform") or p.get("chunks", 1) > 1:  # I2V generative path (single or multi-chunk)
+        cmd += ["--longform", "--chunks", str(p.get("chunks", 1)),
+                "--chunk-frames", str(p["chunk_frames"]), "--chunk-overlap", str(p["chunk_overlap"])]
     if POOL_MODE:
         cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
     elif GW_MODE == "pipeline":

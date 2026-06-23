@@ -168,6 +168,26 @@ def test_orchestrator_longform_chunks(tmp_path):
         gen.stop(0)
 
 
+def test_orchestrator_longform_single_chunk(tmp_path):
+    """--longform with chunks=1 (quality=high path) -> a single I2V generative clip at out-res."""
+    gen, p_gen = _serve(["framework", "t2v", "i2v"])
+    import time as _t
+    _t.sleep(0.5)
+    try:
+        out = tmp_path / "hero.mp4"
+        env = {**os.environ, "WAN_WORKERS": f"127.0.0.1:{p_gen}"}
+        proc = subprocess.run(
+            [sys.executable, str(DWAN / "grpc_orchestrator.py"), "--prompt", "a fox", "--longform",
+             "--chunks", "1", "--chunk-frames", "13", "--out-width", "64", "--out-height", "48",
+             "--out", str(out)], env=env, capture_output=True, text=True, timeout=120)
+        assert out.exists(), proc.stdout + proc.stderr
+        info = json.loads([l for l in proc.stdout.splitlines() if l.startswith("ORCH_DONE")][-1].split(" ", 1)[1])
+        assert info["mode"] == "longform" and info["continuity"] == "i2v" and info["chunks"] == 1
+        assert info["px"] == [48, 64]
+    finally:
+        gen.stop(0)
+
+
 def test_orchestrator_refine_mode_single_fps_interp(tmp_path):
     """--refine-mode single (quality path) + --fps/--interpolate: forces a seam-free full-frame
     refine on the best refiner and the output frame count reflects interpolation."""
