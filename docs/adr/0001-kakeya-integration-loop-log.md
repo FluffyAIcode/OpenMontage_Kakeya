@@ -1148,6 +1148,23 @@ test on agent.kakeya.ai pending the key.
 
 ---
 
+## Iteration 42 — A/B: HunyuanVideo vs WAN (real frames) → adopt Hunyuan as quality layer (ADR 0017)
+
+Same prompt (border collie, snowy forest, cinematic), both 1280×720 ~2s on vast Blackwell.
+- **WAN** (`quality=high`: 1.3B T2V seed → I2V-14B): frame = chaotic abstract blobs, **no recognizable
+  dog/forest** — unusable. Root cause: garbage low-res 1.3B seed amplified by I2V.
+- **Hunyuan** (`hunyuanvideo-community/HunyuanVideo`, 45f/30steps, no offload): frame = **coherent,
+  photorealistic** dog in a snowy forest, cinematic DoF — production-looking.
+
+**Verdict (frame-level visual judgment): adopt HunyuanVideo as the default quality layer.** Night-and-
+day. Caveats: ~8 min / 2s clip @720p (~13–16 s/step), VRAM-heavy (evicted the 85 G WAN worker to avoid
+OOM), prompt adherence imperfect (rendered a Shiba-type dog), long-form still needs Hunyuan-I2V,
+license stricter (Tencent community). Added `HunyuanBackend` to `grpc_worker.py` (`--backend hunyuan`,
+ops framework/i2v). Next: register `hunyuan_video` as a provider for `video_selector`/agent; resolve
+WAN-14B vs Hunyuan VRAM (load-on-demand); wire Hunyuan-I2V for continuity.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
