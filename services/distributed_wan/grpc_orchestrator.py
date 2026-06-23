@@ -74,8 +74,89 @@ def _frames_to_mp4_bytes(frames, fps=12):
     return buf.getvalue()
 
 
+def _interpolate(frames, factor):
+    """Temporal interpolation x`factor` via linear blend between consecutive frames.
+
+    Dependency-free smoothness/fps baseline (ADR 0015 Phase 1): T frames -> (T-1)*factor + 1."""
+    if factor <= 1 or frames.shape[0] < 2:
+        return frames
+    out = []
+    for i in range(frames.shape[0] - 1):
+        a = frames[i].astype(np.float32); b = frames[i + 1].astype(np.float32)
+        for k in range(factor):
+            t = k / factor
+            out.append((a * (1.0 - t) + b * t).round().astype(np.uint8))
+    out.append(frames[-1])
+    return np.stack(out)
+
+
+def _interpolate_mci(frames, factor, base_fps=12):
+    """Motion-compensated (optical-flow) interpolation via ffmpeg `minterpolate` — the RIFE-class
+    smoothness upgrade over linear blending (ADR 0015 Phase 2c). Falls back to linear if ffmpeg/
+    minterpolate is unavailable. Returns ~T*factor frames."""
+    if factor <= 1 or frames.shape[0] < 2:
+        return frames
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        src = Path(__import__("tempfile").mkstemp(suffix=".mp4")[1])
+        dst = Path(__import__("tempfile").mkstemp(suffix=".mp4")[1])
+        iio.mimwrite(src, [frames[i] for i in range(frames.shape[0])], format="mp4", fps=base_fps,
+                     codec="libx264")
+        target = base_fps * factor
+        flt = (f"minterpolate=fps={target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1")
+        import subprocess
+        r = subprocess.run([exe, "-y", "-i", str(src), "-filter:v", flt, "-c:v", "libx264", str(dst)],
+                           capture_output=True)
+        if r.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+            raise RuntimeError("minterpolate failed")
+        out = _mp4_to_frames(dst.read_bytes())
+        src.unlink(missing_ok=True); dst.unlink(missing_ok=True)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        print(f"[orch] mci interpolation unavailable ({exc}); linear fallback", flush=True)
+        return _interpolate(frames, factor)
+
+
+def _encode(frames, out_path, fps=12, interpolate=1, method="linear"):
+    """Apply optional interpolation (linear or mci/optical-flow), write the mp4 at `fps` + a
+    mid-frame png. Returns the final frame count."""
+    if interpolate > 1:
+        f = _interpolate_mci(frames, interpolate, base_fps=fps) if method == "mci" else _interpolate(frames, interpolate)
+    else:
+        f = frames
+    iio.mimwrite(out_path, [f[i] for i in range(f.shape[0])], format="mp4", fps=fps, codec="libx264")
+    Image.fromarray(f[f.shape[0] // 2]).save(out_path.replace(".mp4", "_mid.png"))
+    return int(f.shape[0])
+
+
 def _ramp(n):
     return np.minimum(np.arange(n), np.arange(n)[::-1]) + 1.0
+
+
+def _png_bytes(frame):
+    buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG"); return buf.getvalue()
+
+
+def _stitch(clips, overlap):
+    """Concatenate chunks with an `overlap`-frame crossfade so chunk boundaries don't jump-cut.
+
+    Total frames = sum(len(clip)) - (len(clips)-1)*overlap (ADR 0015 Phase 2 long-form)."""
+    if len(clips) == 1:
+        return clips[0]
+    out = clips[0]
+    for c in clips[1:]:
+        ov = min(overlap, out.shape[0], c.shape[0])
+        if ov > 0:
+            blended = []
+            for k in range(ov):
+                t = (k + 1) / (ov + 1)
+                a = out[out.shape[0] - ov + k].astype(np.float32); b = c[k].astype(np.float32)
+                blended.append((a * (1.0 - t) + b * t).round().astype(np.uint8))
+            out = np.concatenate([out[:out.shape[0] - ov], np.stack(blended), c[ov:]], axis=0)
+        else:
+            out = np.concatenate([out, c], axis=0)
+    return out
 
 
 def _consume(stream, label):
@@ -131,8 +212,30 @@ def main():
     ap.add_argument("--refine-spread", choices=["weighted", "roundrobin"], default="weighted",
                     help="tiled refine assignment: 'weighted' (speed-weighted; a fast refiner may "
                          "take all tiles) or 'roundrobin' (every refiner gets a share, incl. slow MLX).")
+    # --- quality + duration knobs (ADR 0015) ---
+    ap.add_argument("--refine-mode", choices=["auto", "direct", "single", "tiled"], default="auto",
+                    help="refine topology: auto (mlx->single, cuda->tiled), direct (proposer only), "
+                         "single (one seam-free full-frame refine on the best refiner — the quality "
+                         "path on a CUDA box), tiled (2x2 f_theta merge across refiners).")
+    ap.add_argument("--fps", type=int, default=12, help="output frame rate")
+    ap.add_argument("--seconds", type=float, default=0.0,
+                    help="target duration; if >0, frames = round(seconds*fps) (Phase-1 temporal "
+                         "resample of the proposer; true long-form chunking is Phase 2).")
+    ap.add_argument("--interpolate", type=int, default=1,
+                    help="temporal interpolation factor (x2/x4) for smoother motion / higher fps.")
+    ap.add_argument("--interp-method", choices=["linear", "mci"], default="linear",
+                    help="interpolation: 'linear' (blend) or 'mci' (ffmpeg motion-compensated / "
+                         "optical-flow — RIFE-class smoothness; falls back to linear if unavailable).")
+    # Long-form (ADR 0015 Phase 2): chunked autoregressive generation with I2V continuity.
+    ap.add_argument("--chunks", type=int, default=1,
+                    help=">1 enables long-form: N chunks generated autoregressively (chunk N+1 seeded "
+                         "by the last frame of chunk N via I2V) and crossfade-stitched.")
+    ap.add_argument("--chunk-frames", type=int, default=25, help="frames generated per chunk")
+    ap.add_argument("--chunk-overlap", type=int, default=4, help="crossfade frames between chunks")
     ap.add_argument("--out", default="distributed_wan_grpc.mp4")
     args = ap.parse_args()
+    if args.seconds and args.seconds > 0:
+        args.frames = max(2, round(args.seconds * args.fps))
 
     addrs = [a for a in os.environ.get("WAN_WORKERS", "").split(",") if a.strip()]
     if not addrs:
@@ -143,10 +246,66 @@ def main():
     if not fw_workers:
         raise SystemExit("no framework-capable worker")
 
+    # LONG-FORM (ADR 0015 Phase 2): chunked autoregressive generation. chunk0 = T2V; chunk N+1 is
+    # seeded by the last frame of chunk N via I2V (continuity), then crossfade-stitched. Runs on an
+    # i2v-capable worker (the CUDA box with CUDA_I2V_MODEL); falls back to independent T2V chunks
+    # (no continuity) with a warning if no i2v worker is present.
+    if args.chunks > 1:
+        i2v_workers = [w for w in workers if "i2v" in w.ops]
+        cont = bool(i2v_workers)
+        ow, oh = args.out_width, args.out_height
+
+        def _to_out(frames):  # ensure every chunk is the same display resolution for clean stitch
+            if (int(frames.shape[2]), int(frames.shape[1])) == (ow, oh):
+                return frames
+            return np.stack([np.asarray(Image.fromarray(frames[i]).resize((ow, oh), Image.LANCZOS))
+                             for i in range(frames.shape[0])])
+
+        clips, total_gs = [], 0.0
+        if cont:
+            gen = max(i2v_workers, key=lambda w: w.speed)
+            sp = max(fw_workers, key=lambda w: w.speed)
+            print(f"[orch] LONG-FORM (I2V continuity) seed={sp.addr}({sp.backend}) gen={gen.addr}"
+                  f"({gen.backend}) — {args.chunks}x{args.chunk_frames}f @ {ow}x{oh}, overlap={args.chunk_overlap}",
+                  flush=True)
+            # seed frame: a quick T2V proposer clip, upscaled to the display resolution
+            smp4, sgs = _consume(sp.stub.GenerateFramework(pb.FrameworkRequest(
+                prompt=args.prompt, width=args.fw_width, height=args.fw_height,
+                num_frames=args.fw_frames, steps=args.proposer_steps, seed=args.seed)), "seed")
+            sf = _mp4_to_frames(smp4); total_gs += sgs
+            init_png = _png_bytes(np.asarray(Image.fromarray(sf[-1]).resize((ow, oh), Image.BICUBIC)))
+            for c in range(args.chunks):
+                mp4, gs = _consume(gen.stub.GenerateFramework(pb.FrameworkRequest(
+                    prompt=args.prompt, width=ow, height=oh, num_frames=args.chunk_frames,
+                    steps=args.refine_steps, seed=args.seed + 1 + c, init_image=init_png)), f"chunk{c}")
+                frames = _to_out(_mp4_to_frames(mp4))
+                clips.append(frames); total_gs += gs; init_png = _png_bytes(frames[-1])
+                print(f"[orch]   chunk {c} {frames.shape} in {gs:.1f}s", flush=True)
+        else:
+            gen = max(fw_workers, key=lambda w: w.speed)
+            print(f"[orch] LONG-FORM (continuity OFF — no i2v worker) on {gen.addr}({gen.backend}) — "
+                  f"{args.chunks}x{args.chunk_frames}f @ {ow}x{oh}, overlap={args.chunk_overlap}", flush=True)
+            for c in range(args.chunks):
+                mp4, gs = _consume(gen.stub.GenerateFramework(pb.FrameworkRequest(
+                    prompt=args.prompt, width=ow, height=oh, num_frames=args.chunk_frames,
+                    steps=args.refine_steps, seed=args.seed + c)), f"chunk{c}")
+                clips.append(_to_out(_mp4_to_frames(mp4))); total_gs += gs
+                print(f"[orch]   chunk {c} in {gs:.1f}s", flush=True)
+        stitched = _stitch(clips, args.chunk_overlap)
+        nout = _encode(stitched, args.out, args.fps, args.interpolate, args.interp_method)
+        import json
+        print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "longform",
+                                         "generator": gen.addr, "continuity": "i2v" if cont else "off",
+                                         "chunks": args.chunks, "out": args.out, "gen_seconds": round(total_gs, 2),
+                                         "px": [int(stitched.shape[1]), int(stitched.shape[2])],
+                                         "fps": args.fps, "interpolate": args.interpolate,
+                                         "seconds": round(nout / max(args.fps, 1), 2), "frames": nout}), flush=True)
+        return
+
     # DIRECT (no-refine) mode: one T2V generation on the framework worker, no tiled refine.
     # This is the Mac-only / single-GPU path (mlx-video has no vid2vid). Auto-enabled when no
     # refine worker is present, so the service still produces video with just the Mac.
-    if args.no_refine or not refine_workers:
+    if args.no_refine or args.refine_mode == "direct" or not refine_workers:
         fw = max(fw_workers, key=lambda w: w.speed)
         nf = args.fw_frames
         print(f"[orch] DIRECT (no-refine) on {fw.addr} ({fw.backend}) "
@@ -155,14 +314,12 @@ def main():
             prompt=args.prompt, width=args.fw_width, height=args.fw_height,
             num_frames=nf, steps=args.proposer_steps, seed=args.seed)), "generate")
         frames = _mp4_to_frames(mp4)
-        iio.mimwrite(args.out, [frames[i] for i in range(frames.shape[0])], format="mp4", fps=12,
-                     codec="libx264")
-        Image.fromarray(frames[frames.shape[0] // 2]).save(args.out.replace(".mp4", "_mid.png"))
+        nout = _encode(frames, args.out, args.fps, args.interpolate, args.interp_method)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "direct",
                                          "out": args.out, "gen_seconds": round(gs, 2),
-                                         "px": [args.fw_height, args.fw_width],
-                                         "frames": int(frames.shape[0])}), flush=True)
+                                         "px": [args.fw_height, args.fw_width], "fps": args.fps,
+                                         "interpolate": args.interpolate, "frames": nout}), flush=True)
         return
 
     # SINGLE-PASS pipeline: proposer (low-res, head) -> one refiner over the WHOLE clip
@@ -171,7 +328,9 @@ def main():
     # refiner does a spatial-SR upscale (or generative V2V if its build supports it). Auto-on
     # when the chosen refiner is an MLX worker; --single-refine forces it for any backend.
     refiner = max(refine_workers, key=lambda w: w.speed)
-    if args.single_refine or refiner.backend.startswith("mlx"):
+    _use_single = (args.refine_mode == "single" or args.single_refine
+                   or (args.refine_mode == "auto" and refiner.backend.startswith("mlx")))
+    if _use_single:
         fw = max(fw_workers, key=lambda w: w.speed)
         if fw.addr == refiner.addr and len(workers) > 1:
             # prefer a DISTINCT proposer so both Macs are used (head proposes, headless refines)
@@ -187,20 +346,31 @@ def main():
         F = framework.shape[0]
         t_idx = (np.round(np.linspace(0, F - 1, args.frames)).astype(int)
                  if F != args.frames else np.arange(args.frames))
-        proposer = np.stack([framework[t_idx[i]] for i in range(args.frames)])
+        # Upscale the proposer to the TARGET resolution before refine. The CUDA V2V pipeline keeps
+        # its INPUT resolution, so to get high-res generative detail the input must already be at
+        # out_w x out_h (MLX SR also honors this). This is what makes 'high'/single truly hi-res.
+        proposer = np.stack([np.asarray(Image.fromarray(framework[t_idx[i]]).resize(
+            (args.out_width, args.out_height), Image.BICUBIC)) for i in range(args.frames)])
         mp4b, rg = _consume(refiner.stub.RefineTile(pb.RefineRequest(
             prompt=args.prompt, mp4=_frames_to_mp4_bytes(proposer),
             width=args.out_width, height=args.out_height, num_frames=args.frames,
             steps=args.refine_steps, strength=args.strength, seed=args.seed + 10)), "refine")
         final = _mp4_to_frames(mp4b)
-        iio.mimwrite(args.out, [final[i] for i in range(final.shape[0])], format="mp4", fps=12, codec="libx264")
-        Image.fromarray(final[final.shape[0] // 2]).save(args.out.replace(".mp4", "_mid.png"))
+        # Generative refiners (WAN 1.3B V2V) output at the model's NATIVE resolution (~832x480)
+        # regardless of input size, so SR-upscale the generative result to the display target.
+        # (MLX SR already returns out dims -> this is a no-op there.) Honest: generative detail at
+        # native res + spatial upscale to out_w x out_h.
+        if (int(final.shape[2]), int(final.shape[1])) != (args.out_width, args.out_height):
+            final = np.stack([np.asarray(Image.fromarray(final[i]).resize(
+                (args.out_width, args.out_height), Image.LANCZOS)) for i in range(final.shape[0])])
+        px = [int(final.shape[1]), int(final.shape[2])]
+        nout = _encode(final, args.out, args.fps, args.interpolate, args.interp_method)
         import json
         print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "pipeline",
                                          "proposer": fw.addr, "refiner": refiner.addr, "out": args.out,
                                          "proposer_seconds": round(gs, 2), "refine_seconds": round(rg, 2),
-                                         "px": [int(final.shape[1]), int(final.shape[2])],
-                                         "frames": int(final.shape[0])}), flush=True)
+                                         "px": px, "fps": args.fps, "interpolate": args.interpolate,
+                                         "frames": nout}), flush=True)
         return
 
     tiles = [(jy, jx) for jy in range(NY) for jx in range(NX)]
@@ -272,11 +442,12 @@ def main():
         acc[:, oy:oy + HT, ox:ox + WT, :] += frames.astype(np.float64) * wmap
         wsum[:, oy:oy + HT, ox:ox + WT, :] += wmap
     final = (acc / np.maximum(wsum, 1e-6)).clip(0, 255).astype(np.uint8)
-    iio.mimwrite(args.out, [final[i] for i in range(T)], format="mp4", fps=12, codec="libx264")
-    Image.fromarray(final[T // 2]).save(args.out.replace(".mp4", "_mid.png"))
+    nout = _encode(final, args.out, args.fps, args.interpolate, args.interp_method)
     import json
-    print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "refine_wall_s": round(wall, 2),
-                                     "out": args.out, "canvas_px": [CH, CW]}), flush=True)
+    print("ORCH_DONE " + json.dumps({"workers": [w.addr for w in workers], "mode": "tiled",
+                                     "refine_wall_s": round(wall, 2), "out": args.out,
+                                     "canvas_px": [CH, CW], "fps": args.fps,
+                                     "interpolate": args.interpolate, "frames": nout}), flush=True)
 
 
 if __name__ == "__main__":

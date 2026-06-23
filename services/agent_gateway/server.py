@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import re
@@ -127,7 +128,8 @@ class Job:
     def public(self) -> dict:
         return {"id": self.id, "status": self.status, "stage": self.stage,
                 "pct": round(self.pct, 3), "prompt": self.prompt, "mode": self.mode,
-                "error": self.error, "created": self.created, "updated": self.updated,
+                "quality": self.params.get("quality"), "error": self.error,
+                "created": self.created, "updated": self.updated,
                 "log": self.log[-25:], "result": f"/v1/jobs/{self.id}/video" if self.out else None}
 
 
@@ -149,18 +151,70 @@ def _auth(x_api_key: Optional[str] = Header(default=None)):
     return True
 
 
+# Quality presets (ADR 0015): knobs only — topology stays with AGENT_GATEWAY_MODE, except 'high'
+# routes a seam-free full-frame generative refine to the best (CUDA) refiner via refine_mode=single.
+QUALITY_PRESETS: dict[str, dict] = {
+    "draft": {"fw_width": 384, "fw_height": 224, "fw_frames": 13, "proposer_steps": 5,
+              "refine_steps": 12, "out_width": 640, "out_height": 384, "frames": 25,
+              "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
+    "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
+                 "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
+                 "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
+    "high": {"fw_width": 512, "fw_height": 288, "fw_frames": 17, "proposer_steps": 8,
+             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
+             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "single"},
+}
+
+
 class VideoRequest(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=2000)
     mode: str = Field("video", pattern="^(video|agent)$")
-    frames: int = 25
-    fw_width: int = 480
-    fw_height: int = 256
-    fw_frames: int = 13
-    proposer_steps: int = 6
-    refine_steps: int = 16
-    out_width: int = 832      # final resolution for the single-pass (pipeline) refine
-    out_height: int = 480
+    quality: str = Field("standard", pattern="^(draft|standard|high)$")
+    # Duration / smoothness (ADR 0015). seconds>0 overrides frames (= round(seconds*fps)).
+    seconds: Optional[float] = Field(None, ge=0, le=20)
+    # Optional per-knob overrides; when None the quality preset value is used.
+    frames: Optional[int] = None
+    fps: Optional[int] = None
+    interpolate: Optional[int] = Field(None, ge=1, le=4)
+    interp_method: Optional[str] = Field(None, pattern="^(linear|mci)$")
+    fw_width: Optional[int] = None
+    fw_height: Optional[int] = None
+    fw_frames: Optional[int] = None
+    proposer_steps: Optional[int] = None
+    refine_steps: Optional[int] = None
+    out_width: Optional[int] = None
+    out_height: Optional[int] = None
+    refine_mode: Optional[str] = Field(None, pattern="^(auto|direct|single|tiled)$")
+    # Long-form (ADR 0015 Phase 2): chunks>1 (or longform=true + seconds) = autoregressive I2V gen.
+    longform: bool = False
+    chunks: Optional[int] = Field(None, ge=1, le=20)
+    chunk_frames: Optional[int] = None
+    chunk_overlap: Optional[int] = Field(None, ge=0, le=12)
     seed: int = 11
+
+    def resolved(self) -> dict:
+        """Merge preset + explicit overrides into a concrete param dict for the orchestrator."""
+        p = dict(QUALITY_PRESETS.get(self.quality, QUALITY_PRESETS["standard"]))
+        for k in ("frames", "fps", "interpolate", "interp_method", "fw_width", "fw_height",
+                  "fw_frames", "proposer_steps", "refine_steps", "out_width", "out_height", "refine_mode"):
+            v = getattr(self, k)
+            if v is not None:
+                p[k] = v
+        p["seed"] = self.seed
+        p["seconds"] = self.seconds or 0.0
+        p["chunks"] = self.chunks or 1
+        p["chunk_frames"] = self.chunk_frames or 25
+        p["chunk_overlap"] = self.chunk_overlap if self.chunk_overlap is not None else 4
+        # Long-form (opt-in): derive chunk count from target seconds when longform is requested.
+        if self.longform and p["chunks"] == 1 and p["seconds"] > 0:
+            net = max(1, p["chunk_frames"] - p["chunk_overlap"])
+            want = round(p["seconds"] * p["fps"])
+            if want > p["chunk_frames"]:
+                p["chunks"] = max(1, math.ceil((want - p["chunk_overlap"]) / net))
+        if p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds drives frame count
+            p["frames"] = max(2, round(p["seconds"] * p["fps"]))
+        p["quality"] = self.quality
+        return p
 
 
 def _log(job: Job, line: str):
@@ -191,7 +245,16 @@ def _run_video_job(job: Job):
            "--fw-frames", str(p["fw_frames"]), "--proposer-steps", str(p["proposer_steps"]),
            "--refine-steps", str(p["refine_steps"]), "--seed", str(p["seed"]),
            "--out-width", str(p.get("out_width", 832)), "--out-height", str(p.get("out_height", 480)),
+           "--fps", str(p.get("fps", 12)), "--interpolate", str(p.get("interpolate", 1)),
+           "--interp-method", str(p.get("interp_method", "linear")),
            "--out", str(out_path)]
+    if p.get("seconds", 0):
+        cmd += ["--seconds", str(p["seconds"])]
+    if p.get("refine_mode"):  # quality preset / explicit override of refine topology
+        cmd += ["--refine-mode", p["refine_mode"]]
+    if p.get("chunks", 1) > 1:  # long-form (autoregressive I2V continuity)
+        cmd += ["--chunks", str(p["chunks"]), "--chunk-frames", str(p["chunk_frames"]),
+                "--chunk-overlap", str(p["chunk_overlap"])]
     if POOL_MODE:
         cmd.append("--no-refine")  # each pooled worker is a single framework-only GPU (Mac MLX)
     elif GW_MODE == "pipeline":
@@ -296,7 +359,7 @@ def capabilities():
 @app.post("/v1/videos")
 def create_video(req: VideoRequest, _=Depends(_auth)):
     job = Job(id=uuid.uuid4().hex[:12], prompt=req.prompt.strip(), mode=req.mode,
-              params=req.model_dump())
+              params=req.resolved())
     with _LOCK:
         JOBS[job.id] = job
     _POOL.submit(_dispatch, job)

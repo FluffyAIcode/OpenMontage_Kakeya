@@ -84,6 +84,11 @@ class CudaBackend:
     def __init__(self):
         self._lock = threading.Lock()
         self._loaded = False
+        # Optional I2V model for long-form continuity (ADR 0015 Phase 2). T2V 1.3B has no I2V, so
+        # I2V needs a separate checkpoint (e.g. "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"). Only when
+        # CUDA_I2V_MODEL is set do we advertise "i2v" and honor FrameworkRequest.init_image.
+        self.i2v_model = os.environ.get("CUDA_I2V_MODEL", "").strip()
+        self._i2v = None
 
     def load(self):
         if self._loaded:
@@ -101,11 +106,31 @@ class CudaBackend:
                                               ("tokenizer", "text_encoder", "transformer", "vae", "scheduler")})
         self._loaded = True
 
+    def _load_i2v(self):
+        if self._i2v is not None or not self.i2v_model:
+            return
+        import torch
+        from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanImageToVideoPipeline
+        from transformers import CLIPVisionModel
+        # diffusers Wan I2V recipe: CLIP image encoder + Wan VAE (fp32) + transformer (bf16);
+        # flow_shift=5.0 is the 720P setting. CUDA_I2V_OFFLOAD=1 enables CPU offload if VRAM-tight.
+        image_encoder = CLIPVisionModel.from_pretrained(self.i2v_model, subfolder="image_encoder",
+                                                        torch_dtype=torch.float32)
+        vae = AutoencoderKLWan.from_pretrained(self.i2v_model, subfolder="vae", torch_dtype=torch.float32)
+        pipe = WanImageToVideoPipeline.from_pretrained(self.i2v_model, vae=vae, image_encoder=image_encoder,
+                                                       torch_dtype=torch.bfloat16)
+        pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=5.0)
+        if os.environ.get("CUDA_I2V_OFFLOAD", "0").lower() in ("1", "true", "yes"):
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to("cuda")
+        self._i2v = pipe
+
     def health(self):
         import torch
+        ops = ["framework", "refine", "t2v"] + (["i2v"] if self.i2v_model else [])
         return pb.HealthReply(device="cuda" if torch.cuda.is_available() else "cpu",
-                              backend="cuda-diffusers", model=self.MODEL,
-                              ops=["framework", "refine", "t2v"], ready=self._loaded,
+                              backend="cuda-diffusers", model=self.MODEL, ops=ops, ready=self._loaded,
                               note=torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
                               relative_speed=1.0)
 
@@ -120,6 +145,23 @@ class CudaBackend:
 
     def framework(self, req, q):
         import torch
+        # I2V continuity chunk: generate conditioned on the seed image (long-form, ADR 0015 Phase 2).
+        if getattr(req, "init_image", b"") and self.i2v_model:
+            self._load_i2v()
+            from PIL import Image
+            w = max(16, ((req.width or 1280) // 16) * 16)      # Wan needs multiples of 16
+            h = max(16, ((req.height or 720) // 16) * 16)
+            nf = req.num_frames or 81
+            if nf % 4 != 1:                                     # Wan needs num_frames == 4n+1
+                nf = (nf // 4) * 4 + 1
+            img = Image.open(io.BytesIO(req.init_image)).convert("RGB").resize((w, h))
+            with self._lock:
+                g = torch.Generator("cpu").manual_seed(req.seed or 42)
+                out = self._i2v(image=img, prompt=req.prompt, negative_prompt=req.negative_prompt or NEG_DEFAULT,
+                                num_frames=nf, width=w, height=h, num_inference_steps=req.steps or 30,
+                                guidance_scale=5.0, generator=g,
+                                callback_on_step_end=self._cb(q, req.steps or 30))
+                return _to_uint8(out.frames[0])
         self.load()
         with self._lock:
             self.pipe.set_adapters("causvid")
@@ -290,7 +332,7 @@ class MlxBackend:
 class TestBackend:
     def health(self):
         return pb.HealthReply(device=os.environ.get("TEST_DEVICE", "cpu"), backend="test-synthetic",
-                              model="none", ops=["framework", "refine", "t2v"], ready=True,
+                              model="none", ops=["framework", "refine", "t2v", "i2v"], ready=True,
                               note="transport smoke test (no model)",
                               relative_speed=float(os.environ.get("TEST_SPEED", "1.0")))
 
@@ -300,6 +342,9 @@ class TestBackend:
             q.put_nowait(("p", (i + 1) / 4)); time.sleep(0.03)
         n, h, w = req.num_frames or 8, req.height or 480, req.width or 832
         arr = np.zeros((n, h, w, 3), np.uint8); arr[..., :] = (40, 80, 160)
+        # I2V continuity: mark frame 0 from the seed image so a stitch test can verify continuity.
+        if getattr(req, "init_image", b""):
+            arr[0, ..., 1] = int(np.frombuffer(req.init_image[:256], np.uint8).mean()) % 256
         return arr
 
     def refine(self, req, q):

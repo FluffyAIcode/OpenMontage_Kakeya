@@ -36,6 +36,11 @@ message FrameworkRequest {
   int32 num_frames = 5;
   int32 steps = 6;
   int64 seed = 7;
+  // I2V continuity (ADR 0015 Phase 2 long-form): when set, generate conditioned on this start
+  // image (PNG/JPEG bytes) instead of pure T2V. The orchestrator seeds chunk N+1 with the last
+  // frame of chunk N. Workers without an i2v model ignore it (proto3 unknown-field tolerant) and
+  // fall back to T2V; only workers advertising the "i2v" op honor it.
+  bytes init_image = 8;
 }
 
 message RefineRequest {

@@ -1021,6 +1021,107 @@ Membership flipped 3-node ↔ 2-Mac with **no gateway restart** (dynamic file). 
 
 ---
 
+## Iteration 36 — quality & duration optimization Phase 1 (ADR 0015)
+
+**Ask:** start optimizing two dimensions on the current architecture — **video quality** and **duration**.
+
+**Built (Phase 1, offline-validated):**
+- **Quality — seam-free full-frame refine.** Orchestrator `--refine-mode {auto,direct,single,tiled}`:
+  `single` runs ONE generative V2V over the whole upscaled clip on the best (CUDA) refiner — no 2×2
+  seams, no mixed MLX-SR tiles. `auto` keeps prior behavior.
+- **Quality — presets/knobs.** Gateway `quality=draft|standard|high` (+ per-knob overrides): high =
+  `refine_mode=single`, 1280×720, refine-steps 24, 24fps, interpolate ×2. Topology still from
+  `AGENT_GATEWAY_MODE`; `high` forces the seam-free single path on the CUDA box.
+- **Duration/smoothness.** `--fps`, `--seconds` (frames = round(seconds·fps)), `--interpolate {1,2,4}`
+  (linear-blend temporal interpolation). All encode paths go through `_encode(fps, interpolate)`;
+  `ORCH_DONE` reports fps/interpolate/frames.
+
+**Honest scope:** `single`/`high` uses one refiner (vast) per job (seam-free, fully generative) — use
+`distributed` to engage both refiners. Phase-1 `--seconds` resamples the proposer's motion (smoother,
+not new content); true long-form = Phase-2 chunked I2V continuity. Linear interp is a baseline; RIFE/
+FILM is Phase 2.
+
+**Tests:** `_interpolate` frame-count; gateway quality presets + seconds/overrides; real-gRPC
+`--refine-mode single` + fps/interpolate (ORCH_DONE fps=16, interpolate=2, frames=9). **20/20 pass.**
+Roadmap + phases in ADR 0015. Live high-res (`high`→vast 1280×720 seam-free) benchmark next.
+
+---
+
+## Iteration 37 — quality+duration Phase 2: long-form (chunked I2V) + hi-res refine fix; live vast
+
+**New vast** (RTX PRO 6000 Blackwell, 97G) brought up as refiner via the supervisor (fresh-cache fix
+for a `Stale file handle` on the `/workspace` HF cache → `HF_HOME=/root/.hf_home`; re-authorized the
+head key with the un-merge/dedup normalizer). Supervisor **auto-recovered the new endpoint** (tunnel +
+3-node) after the vast.env edit — durability proven on a real recreate.
+
+**Hi-res quality finding (two real-GPU runs):** the WAN **1.3B V2V model is locked to its native
+~832×480** — feeding it 720p just gets downscaled, so generative output is 480p. The honest hi-res
+pipeline is **generative refine at native res → spatial SR-upscale to the display target**. Fix:
+`single` upscales the proposer before the refiner AND SR-upscales the generative result to
+`out_w×out_h`. **Validated:** proposer(MLX)→generative V2V on vast(cuda, 9.1s)→SR→interpolate ×2 →
+`ORCH_DONE px=[720,1280] frames=49`, ffprobe **h264 1280×720, 49f, 2.04s**. ✅ (True 720p needs a
+720P/14B model — Phase 2b.)
+
+**Phase 2 long-form** (ADR 0015 §3b): `--chunks` autoregressive generation with **I2V continuity**
+(proto `init_image`; CUDA `WanImageToVideoPipeline` gated on `CUDA_I2V_MODEL`; advertises `i2v` only
+then) + crossfade `_stitch`. Gateway `longform`/`chunks`. Tests: `_stitch` math, real-gRPC long-form
+(chunks=3, continuity=i2v, frames=23), gateway long-form + presets/seconds. **23/23 pass.**
+
+**Honest scope:** long-form continuity needs a Wan **I2V checkpoint** on the CUDA box
+(`CUDA_I2V_MODEL`) — orchestration validated offline + the contract propagates to vast via the
+supervisor; without it, chunks are independent T2V (continuity off). RIFE/FILM is Phase 2b.
+
+---
+
+## Iteration 38 — Phase 2b: I2V-14B-720P long-form on vast — TRUE 720p + continuity ✅
+
+Deployed **Wan2.1-I2V-14B-720P** (84 G) on the new vast (RTX PRO 6000 Blackwell, 97 G). Worker does
+the T2V seed (1.3B) + I2V chunks (14B) — launched with `--ops framework,refine,i2v` + `CUDA_I2V_MODEL`.
+Long-form ran entirely on vast (`WAN_WORKERS=127.0.0.1:50052` via the head→vast tunnel).
+
+**Live result:** `ORCH_DONE mode=longform continuity=i2v chunks=2 px=[720,1280] frames=46 seconds=2.88
+gen=391s` → ffprobe **h264 1280×720, 46f, 2.875s**. **True native 720p generative** (the 14B I2V
+generates at 1280×720 — no SR) with **I2V continuity** across the chunk boundary (25+25−4 crossfade).
+~8.3 s/step at 720p.
+
+**Issues hit + fixes (real-GPU):**
+- `/workspace` HF cache `Stale file handle` → `HF_HOME=/root/.hf_home`.
+- head-key merge on vast `authorized_keys` (no trailing newline) → un-merge/dedup normalizer.
+- the 1.3B V2V caps at ~480p (Iter 37) → 14B I2V is the true-720p path.
+- **vast image kills user processes on SSH logout** (no systemd/linger; killed tmux AND setsid) →
+  ran the worker under a **persistent SSH** for the validation. Durable i2v under the supervisor on
+  such images needs systemd/linger (Phase 2c). `vast_bootstrap.sh`/supervisor now env-gate i2v
+  (`CUDA_I2V_MODEL`/`VAST_I2V_MODEL`) for images where tmux persists.
+- orchestrator on the head used the head repo's OLD pb2 (no `init_image`) → scp'd the regenerated pb2.
+- the MLX head seed hit the **Metal GPU watchdog** → moved the T2V seed onto vast's 1.3B (all-on-vast).
+
+**Tests:** 20 offline (no GPU) still green. Code in PR #5 (ADR 0015 §3b).
+
+---
+
+## Iteration 39 — Phase 2c: optical-flow (mci) interpolation + durable held-worker (auto-recover) ✅
+
+**Optical-flow interpolation:** `--interp-method {linear,mci}` (gateway `interp_method`; `high`→mci).
+`_interpolate_mci` uses **ffmpeg `minterpolate`** (motion-compensated: `mi_mode=mci`, `mc_mode=aobmc`,
+bidir, vsbmc) — RIFE-class smoothness over linear blend, linear fallback if unavailable. Confirmed
+`minterpolate` is in the bundled ffmpeg (not falling back). Unit-tested (frame-count grows).
+
+**Durable i2v on ephemeral vast** (`VAST_HOLD_WORKER=1`): the new Blackwell vast image **kills user
+processes on SSH logout** (no systemd/linger — killed tmux AND setsid). Fix: the **launchd-durable
+head supervisor holds the worker as a child of a persistent ssh** (`KAKEYA_HELD=<host> … exec python
+grpc_worker --ops framework,refine,i2v`); `vast_bootstrap.sh` gains `BOOTSTRAP_NO_LAUNCH` (deps-only).
+`vast_onstart.sh` authorizes the head key + persistent `HF_HOME` so a recreated box is auto-adopted.
+
+**Validated live:** killed the manual persistent worker; the supervisor **spawned and now holds** the
+i2v worker — 1 held ssh on the head, `ops=['framework','refine','i2v']` via the tunnel, 3-node — with
+**no dependency on any interactive session**. On recreate: held ssh drops → 2-Mac fallback → new box
+(key authorized, endpoint via vast.env/`VAST_RESOLVE_CMD`) → deps reinstall + held worker respawn →
+auto-recovery. (Caveat: the ~84 G I2V model re-downloads unless `HF_HOME` is on a persistent volume.)
+
+**Tests:** 21 offline green. ADR 0015 §3c. Phases 1/2/2b/2c all landed in PR #5.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
