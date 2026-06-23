@@ -188,6 +188,99 @@ class CudaBackend:
 
 
 # --------------------------------------------------------------------------- #
+# HunyuanVideo backend (diffusers) — a higher-quality open-source provider (ADR 0017).
+# T2V via HunyuanVideoPipeline, I2V via HunyuanVideoImageToVideoPipeline. 13B; native 720p,
+# ~5s clips. Heavy: CPU offload on by default (HUNYUAN_OFFLOAD=1). CUDA/vast only (no MLX).
+# --------------------------------------------------------------------------- #
+class HunyuanBackend:
+    MODEL = os.environ.get("HUNYUAN_MODEL", "hunyuanvideo-community/HunyuanVideo")
+
+    def __init__(self, ops):
+        self.ops = ops or ["framework"]
+        self._lock = threading.Lock()
+        self.pipe = None
+        self._i2v = None
+        self.offload = os.environ.get("HUNYUAN_OFFLOAD", "1").lower() in ("1", "true", "yes")
+
+    def _load_t2v(self):
+        if self.pipe is not None:
+            return
+        import torch
+        from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel
+        torch.set_grad_enabled(False)
+        tr = HunyuanVideoTransformer3DModel.from_pretrained(self.MODEL, subfolder="transformer",
+                                                            torch_dtype=torch.bfloat16)
+        p = HunyuanVideoPipeline.from_pretrained(self.MODEL, transformer=tr, torch_dtype=torch.float16)
+        p.vae.enable_tiling()
+        p.enable_model_cpu_offload() if self.offload else p.to("cuda")
+        self.pipe = p
+
+    def _load_i2v(self):
+        if self._i2v is not None:
+            return
+        import torch
+        from diffusers import HunyuanVideoImageToVideoPipeline
+        p = HunyuanVideoImageToVideoPipeline.from_pretrained(self.MODEL, torch_dtype=torch.float16)
+        p.vae.enable_tiling()
+        p.enable_model_cpu_offload() if self.offload else p.to("cuda")
+        self._i2v = p
+
+    def health(self):
+        import torch
+        return pb.HealthReply(device="cuda" if torch.cuda.is_available() else "cpu",
+                              backend="hunyuan-diffusers", model=self.MODEL, ops=self.ops, ready=False,
+                              note=torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+                              relative_speed=float(os.environ.get("HUNYUAN_RELATIVE_SPEED", "0.8")))
+
+    def _cb(self, q, total):
+        def cb(pipe, i, t, kw):
+            try:
+                q.put_nowait(("p", (i + 1) / max(total, 1)))
+            except queue.Full:
+                pass
+            return kw
+        return cb
+
+    @staticmethod
+    def _snap(req):
+        w = max(16, (req.width or 1280) // 16 * 16)
+        h = max(16, (req.height or 720) // 16 * 16)
+        nf = req.num_frames or 61
+        if nf % 4 != 1:                       # Hunyuan needs num_frames == 4k+1
+            nf = (nf // 4) * 4 + 1
+        return w, h, nf
+
+    def framework(self, req, q):
+        import torch
+        if getattr(req, "init_image", b"") and "i2v" in self.ops:
+            return self.i2v(req, q)
+        self._load_t2v()
+        w, h, nf = self._snap(req)
+        with self._lock:
+            g = torch.Generator("cpu").manual_seed(req.seed or 42)
+            out = self.pipe(prompt=req.prompt, height=h, width=w, num_frames=nf,
+                            num_inference_steps=req.steps or 30, generator=g,
+                            callback_on_step_end=self._cb(q, req.steps or 30))
+            return _to_uint8(out.frames[0])
+
+    def i2v(self, req, q):
+        import torch
+        from PIL import Image
+        self._load_i2v()
+        w, h, nf = self._snap(req)
+        img = Image.open(io.BytesIO(req.init_image)).convert("RGB").resize((w, h))
+        with self._lock:
+            g = torch.Generator("cpu").manual_seed(req.seed or 42)
+            out = self._i2v(image=img, prompt=req.prompt, height=h, width=w, num_frames=nf,
+                            num_inference_steps=req.steps or 30, generator=g,
+                            callback_on_step_end=self._cb(q, req.steps or 30))
+            return _to_uint8(out.frames[0])
+
+    def refine(self, req, q):
+        raise RuntimeError("hunyuan backend has no refine op; use framework/i2v")
+
+
+# --------------------------------------------------------------------------- #
 # MLX backend (wraps mlx-video) — Mac mini; OWNER-RUN (untested in CI; no Mac here)
 # --------------------------------------------------------------------------- #
 class MlxBackend:
@@ -425,7 +518,7 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--backend", choices=["cuda", "mlx", "test"], default="cuda")
+    ap.add_argument("--backend", choices=["cuda", "mlx", "test", "hunyuan"], default="cuda")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=50051)
     ap.add_argument("--preload", action="store_true")
@@ -441,6 +534,8 @@ def main():
             backend.load()
     elif args.backend == "test":
         backend = TestBackend()
+    elif args.backend == "hunyuan":
+        backend = HunyuanBackend([o.strip() for o in (args.ops or "framework,i2v").split(",") if o.strip()])
     else:
         backend = MlxBackend(args.mlx_model_dir, [o.strip() for o in args.mlx_ops.split(",") if o.strip()])
 
