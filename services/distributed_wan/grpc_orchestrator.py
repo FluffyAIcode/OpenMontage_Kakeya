@@ -218,22 +218,45 @@ def main():
     # (no continuity) with a warning if no i2v worker is present.
     if args.chunks > 1:
         i2v_workers = [w for w in workers if "i2v" in w.ops]
-        gen = max(i2v_workers, key=lambda w: w.speed) if i2v_workers else max(fw_workers, key=lambda w: w.speed)
-        cont = "i2v" in gen.ops
-        print(f"[orch] LONG-FORM on {gen.addr}({gen.backend}) — {args.chunks}x{args.chunk_frames}f "
-              f"@ {args.out_width}x{args.out_height}, overlap={args.chunk_overlap}, "
-              f"continuity={'I2V' if cont else 'OFF (no i2v worker)'}", flush=True)
-        clips, init_png, total_gs = [], b"", 0.0
-        for c in range(args.chunks):
-            mp4, gs = _consume(gen.stub.GenerateFramework(pb.FrameworkRequest(
-                prompt=args.prompt, width=args.out_width, height=args.out_height,
-                num_frames=args.chunk_frames, steps=args.refine_steps, seed=args.seed + c,
-                init_image=(init_png if cont else b""))), f"chunk{c}")
-            frames = _mp4_to_frames(mp4)
-            clips.append(frames); total_gs += gs
-            if cont:
-                init_png = _png_bytes(frames[-1])
-            print(f"[orch]   chunk {c} {frames.shape} in {gs:.1f}s", flush=True)
+        cont = bool(i2v_workers)
+        ow, oh = args.out_width, args.out_height
+
+        def _to_out(frames):  # ensure every chunk is the same display resolution for clean stitch
+            if (int(frames.shape[2]), int(frames.shape[1])) == (ow, oh):
+                return frames
+            return np.stack([np.asarray(Image.fromarray(frames[i]).resize((ow, oh), Image.LANCZOS))
+                             for i in range(frames.shape[0])])
+
+        clips, total_gs = [], 0.0
+        if cont:
+            gen = max(i2v_workers, key=lambda w: w.speed)
+            sp = max(fw_workers, key=lambda w: w.speed)
+            print(f"[orch] LONG-FORM (I2V continuity) seed={sp.addr}({sp.backend}) gen={gen.addr}"
+                  f"({gen.backend}) — {args.chunks}x{args.chunk_frames}f @ {ow}x{oh}, overlap={args.chunk_overlap}",
+                  flush=True)
+            # seed frame: a quick T2V proposer clip, upscaled to the display resolution
+            smp4, sgs = _consume(sp.stub.GenerateFramework(pb.FrameworkRequest(
+                prompt=args.prompt, width=args.fw_width, height=args.fw_height,
+                num_frames=args.fw_frames, steps=args.proposer_steps, seed=args.seed)), "seed")
+            sf = _mp4_to_frames(smp4); total_gs += sgs
+            init_png = _png_bytes(np.asarray(Image.fromarray(sf[-1]).resize((ow, oh), Image.BICUBIC)))
+            for c in range(args.chunks):
+                mp4, gs = _consume(gen.stub.GenerateFramework(pb.FrameworkRequest(
+                    prompt=args.prompt, width=ow, height=oh, num_frames=args.chunk_frames,
+                    steps=args.refine_steps, seed=args.seed + 1 + c, init_image=init_png)), f"chunk{c}")
+                frames = _to_out(_mp4_to_frames(mp4))
+                clips.append(frames); total_gs += gs; init_png = _png_bytes(frames[-1])
+                print(f"[orch]   chunk {c} {frames.shape} in {gs:.1f}s", flush=True)
+        else:
+            gen = max(fw_workers, key=lambda w: w.speed)
+            print(f"[orch] LONG-FORM (continuity OFF — no i2v worker) on {gen.addr}({gen.backend}) — "
+                  f"{args.chunks}x{args.chunk_frames}f @ {ow}x{oh}, overlap={args.chunk_overlap}", flush=True)
+            for c in range(args.chunks):
+                mp4, gs = _consume(gen.stub.GenerateFramework(pb.FrameworkRequest(
+                    prompt=args.prompt, width=ow, height=oh, num_frames=args.chunk_frames,
+                    steps=args.refine_steps, seed=args.seed + c)), f"chunk{c}")
+                clips.append(_to_out(_mp4_to_frames(mp4))); total_gs += gs
+                print(f"[orch]   chunk {c} in {gs:.1f}s", flush=True)
         stitched = _stitch(clips, args.chunk_overlap)
         nout = _encode(stitched, args.out, args.fps, args.interpolate)
         import json

@@ -110,10 +110,21 @@ class CudaBackend:
         if self._i2v is not None or not self.i2v_model:
             return
         import torch
-        from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
+        from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanImageToVideoPipeline
+        from transformers import CLIPVisionModel
+        # diffusers Wan I2V recipe: CLIP image encoder + Wan VAE (fp32) + transformer (bf16);
+        # flow_shift=5.0 is the 720P setting. CUDA_I2V_OFFLOAD=1 enables CPU offload if VRAM-tight.
+        image_encoder = CLIPVisionModel.from_pretrained(self.i2v_model, subfolder="image_encoder",
+                                                        torch_dtype=torch.float32)
         vae = AutoencoderKLWan.from_pretrained(self.i2v_model, subfolder="vae", torch_dtype=torch.float32)
-        self._i2v = WanImageToVideoPipeline.from_pretrained(self.i2v_model, vae=vae, torch_dtype=torch.bfloat16)
-        self._i2v.to("cuda")
+        pipe = WanImageToVideoPipeline.from_pretrained(self.i2v_model, vae=vae, image_encoder=image_encoder,
+                                                       torch_dtype=torch.bfloat16)
+        pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=5.0)
+        if os.environ.get("CUDA_I2V_OFFLOAD", "0").lower() in ("1", "true", "yes"):
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to("cuda")
+        self._i2v = pipe
 
     def health(self):
         import torch
@@ -138,13 +149,18 @@ class CudaBackend:
         if getattr(req, "init_image", b"") and self.i2v_model:
             self._load_i2v()
             from PIL import Image
-            img = Image.open(io.BytesIO(req.init_image)).convert("RGB")
+            w = max(16, ((req.width or 1280) // 16) * 16)      # Wan needs multiples of 16
+            h = max(16, ((req.height or 720) // 16) * 16)
+            nf = req.num_frames or 81
+            if nf % 4 != 1:                                     # Wan needs num_frames == 4n+1
+                nf = (nf // 4) * 4 + 1
+            img = Image.open(io.BytesIO(req.init_image)).convert("RGB").resize((w, h))
             with self._lock:
                 g = torch.Generator("cpu").manual_seed(req.seed or 42)
                 out = self._i2v(image=img, prompt=req.prompt, negative_prompt=req.negative_prompt or NEG_DEFAULT,
-                                num_frames=req.num_frames or 25, width=req.width or 832, height=req.height or 480,
-                                num_inference_steps=req.steps or 20, guidance_scale=5.0, generator=g,
-                                callback_on_step_end=self._cb(q, req.steps or 20))
+                                num_frames=nf, width=w, height=h, num_inference_steps=req.steps or 30,
+                                guidance_scale=5.0, generator=g,
+                                callback_on_step_end=self._cb(q, req.steps or 30))
                 return _to_uint8(out.frames[0])
         self.load()
         with self._lock:
