@@ -1122,6 +1122,32 @@ auto-recovery. (Caveat: the ~84 G I2V model re-downloads unless `HF_HOME` is on 
 
 ---
 
+## Iteration 41 — Gap B Phase 1: autonomous agent runtime (mode=agent) — ADR 0016
+
+**Finding:** OpenMontage has **no Python pipeline runner** — the host LLM is normally the
+orchestrator. So `mode=agent` integration = building a new **autonomous agent runtime** (a cloud-LLM
+reasoner + tool-calling loop). In-repo LLM is only `kakeya_llm` (mechanical).
+
+**Built:** `services/agent_runtime/` (`AGENT_RUNTIME_CMD`):
+- `llm.py` — urllib-only cloud LLM client (`AGENT_LLM=anthropic|openai|kakeya|stub`, auto-detect).
+- `run.py` — unattended orchestrator: LLM → brief→script→scene_plan (schema-validated + checkpointed
+  via `lib/checkpoint`), assets via `video_selector` (auto-routes to best provider; premium if
+  configured, else WAN draft) + `tts_selector` + `music_gen`, deterministic edit → `audio_mixer` +
+  `video_compose` (ffmpeg) → final mp4. `AGENT_RUNTIME_FAKE_ASSETS=1` for CI.
+
+**Topology:** agent runtime on the head Mac CPU (cloud LLM, doesn't steal video GPU); headless = video
+worker; vast = heavy gen — the cost/stability recommendation.
+
+**Validated offline (no keys/GPU):** stub LLM + ffmpeg fixtures → full plan→validate→checkpoint→
+assets→mix→compose → valid h264 mp4 + checkpoints. 23 tests pass (runtime+gateway+pipeline).
+
+**Honest scope:** MVP "auto" path (no research/proposal/approval/reviewer governance). **Needs a
+cloud LLM key** to actually run; quality is provider-bounded (WAN draft unless a premium video
+provider key is set — then `video_selector` auto-upgrades). Not yet "all skills". Live `mode=agent`
+test on agent.kakeya.ai pending the key.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
