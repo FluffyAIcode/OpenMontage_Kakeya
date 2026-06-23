@@ -377,8 +377,8 @@ def check_llm() -> int:
     llm = LLM()
     log(f"LLM provider={llm.provider} model={llm.model or '(default)'}")
     if llm.provider == "stub":
-        log("LLM check: provider=stub — no real endpoint configured "
-            "(set AGENT_LLM + KAKEYA_ENDPOINT/ANTHROPIC_API_KEY/OPENAI_API_KEY).")
+        log("LLM check: provider=stub — no real endpoint configured (set AGENT_LLM + one of "
+            "KAKEYA_GRPC_ADDRESS / KAKEYA_ENDPOINT / ANTHROPIC_API_KEY / OPENAI_API_KEY).")
         return 2
     t0 = time.time()
     try:

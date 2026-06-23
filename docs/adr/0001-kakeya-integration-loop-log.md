@@ -1195,8 +1195,19 @@ Added `python -m services.agent_runtime.run --check-llm`: one tiny LLM round-tri
 provider/model + latency, exits 0 (OK) / 1 (endpoint error) / 2 (no endpoint, provider=stub) — so the
 reasoner is verified in ~seconds before committing to a 20–30 min pipeline run. Cloud agent cannot
 submit `mode=agent` directly (gateway enforces `X-API-Key`); the live planning+director run is driven
-by the key holder. The agent runtime reaches the runtime via the OpenAI-compatible HTTP shim
-(`AGENT_LLM=kakeya` + `KAKEYA_ENDPOINT`); the gRPC `RuntimeService` is token-id level, not text I/O.
+by the key holder.
+
+**Live transport = `kakeya_grpc` (direct gRPC, not the HTTP shim).** Folded the head's working
+provider into the repo: `AGENT_LLM=kakeya_grpc` calls the Kakeya engine's native gRPC `RuntimeService`
+at token-id level (the stable surface — the OpenAI HTTP shim is deprecated/single-session). It is an
+**external dependency contract** — `KAKEYA_REPO` must point at a Kakeya checkout (top-level `kakeya`
+pkg + `sdks/python`); `kakeya`/`transformers` import **lazily** only when selected, so grpc/transformers
+never enter OpenMontage's core deps (D5/D7). Flow: `apply_chat_template(enable_thinking=False)` →
+`Client.create_session(eos_token_ids)` → `append` → `generate(max_tokens)` → `decode`. Env:
+`KAKEYA_GRPC_ADDRESS=127.0.0.1:51051`, `KAKEYA_TOKENIZER_ID` (→ `KAKEYA_VERIFIER_ID` fallback). Head
+deps in `~/.venv-distwan`: grpcio 1.81, transformers 5.12, mlx-lm 0.31. **Owner confirmed live:**
+`--check-llm` → `provider=kakeya_grpc model=kakeya-local` → `OK`. Offline guard test asserts a missing
+`KAKEYA_REPO` yields a clear `RuntimeError` (no obscure ImportError, no core-dep creep). `3 passed`.
 
 ---
 

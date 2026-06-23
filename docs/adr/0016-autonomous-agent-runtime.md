@@ -24,9 +24,21 @@ runtime**.
 New module `services/agent_runtime/` exposed as `AGENT_RUNTIME_CMD`
 (`python -m services.agent_runtime.run --prompt … --out …`):
 
-- **`llm.py`** — dependency-free (urllib) cloud-LLM client: `AGENT_LLM = anthropic|openai|kakeya|stub`
-  (auto-detected from `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`KAKEYA_ENDPOINT`). `complete_json` parses
-  + retries. Creative reasoning runs here; the host agent is no longer required at runtime.
+- **`llm.py`** — LLM client: `AGENT_LLM = anthropic|openai|kakeya|kakeya_grpc|stub` (auto-detected
+  from `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`KAKEYA_GRPC_ADDRESS`/`KAKEYA_ENDPOINT`). `complete_json`
+  parses + retries. Creative reasoning runs here; the host agent is no longer required at runtime.
+  - The cloud + `kakeya` (HTTP shim) providers are **urllib-only** (no heavy deps).
+  - **`kakeya_grpc`** (the head's live path) talks **directly** to the user-run Kakeya engine over
+    its native gRPC `RuntimeService` (token-id level — the real stable surface; the HTTP shim is
+    deprecated/single-session). It is an **external dependency contract**: OpenMontage does **not**
+    vendor the Kakeya SDK/proto — point `KAKEYA_REPO` at a checkout (must expose a top-level `kakeya`
+    package + `sdks/python`) and the `kakeya`/`transformers` imports happen **lazily** only when this
+    provider is selected, so grpc/transformers never become core deps (ADR 0001 D5/D7). Env:
+    `KAKEYA_GRPC_ADDRESS` (e.g. `127.0.0.1:51051`), `KAKEYA_TOKENIZER_ID` (HF/MLX tokenizer dir;
+    falls back to `KAKEYA_VERIFIER_ID`). Flow: tokenizer `apply_chat_template(enable_thinking=False)`
+    → `Client.create_session(eos_token_ids=…)` → `append` → `generate(max_tokens)` → `decode`.
+    Host deps (head `~/.venv-distwan`): `grpcio`, `transformers`, `mlx`/`mlx-lm`. Missing
+    `KAKEYA_REPO` → clear actionable `RuntimeError`.
 - **`run.py`** — minimal unattended orchestrator that reuses the real machinery:
   - LLM produces **brief → script → scene_plan** (each schema-validated via `schemas.artifacts`
     and checkpointed via `lib/checkpoint`, exactly like the governed pipeline; director-skill text
@@ -76,10 +88,10 @@ idea/script/scene_plan/assets/edit. The test asserts each scene received a **dir
 - Deploy: set `AGENT_RUNTIME_CMD="<venv> -m services.agent_runtime.run"` + an LLM endpoint on the
   head; live-test `mode=agent` via `agent.kakeya.ai`. **LLM endpoint smoke test:** run
   `python -m services.agent_runtime.run --check-llm` first — one tiny round-trip prints
-  provider/model + latency and exits non-zero on failure, so the reasoner is verified before a full
-  (slow) pipeline run. With the head's Kakeya/Gemma runtime, point `AGENT_LLM=kakeya` +
-  `KAKEYA_ENDPOINT` at the OpenAI-compatible HTTP shim (the stable text surface; the gRPC
-  `RuntimeService` is token-id level).
+  provider/model + latency and exits 0/1/2 (ok/error/no-endpoint), so the reasoner is verified
+  before a full (slow) pipeline run. The head's live config uses **`AGENT_LLM=kakeya_grpc`** against
+  the Gemma 26B gRPC runtime (`KAKEYA_GRPC_ADDRESS=127.0.0.1:51051`, `KAKEYA_REPO`, `KAKEYA_TOKENIZER_ID`)
+  — `--check-llm` prints `OK`, confirming end-to-end reachability.
 - Configure premium video provider for production-grade clips (the quality answer from the
   draft-vs-premium discussion).
 - Grow toward the governed pipeline (proposal/approval/reviewer, more director skills) and more

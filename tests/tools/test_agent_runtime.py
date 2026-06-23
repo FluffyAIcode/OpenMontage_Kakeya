@@ -86,3 +86,15 @@ def test_llm_json_extraction():
     from services.agent_runtime.llm import LLM
     llm = LLM(stub=lambda s, u: 'prefix ```json\n{"a": 1, "b": {"c": 2}}\n``` suffix')
     assert llm.complete_json("sys", "user") == {"a": 1, "b": {"c": 2}}
+
+
+def test_kakeya_grpc_requires_repo(monkeypatch):
+    """kakeya_grpc is an external-dependency contract: without KAKEYA_REPO it must fail with a
+    clear, actionable error (not an obscure ImportError) and never become a core dep."""
+    from services.agent_runtime.llm import LLM
+    monkeypatch.delenv("KAKEYA_REPO", raising=False)
+    monkeypatch.setenv("KAKEYA_GRPC_ADDRESS", "127.0.0.1:51051")
+    llm = LLM(provider="kakeya_grpc")
+    assert llm.provider == "kakeya_grpc"
+    with pytest.raises(RuntimeError, match="KAKEYA_REPO"):
+        llm.complete("sys", "user")
