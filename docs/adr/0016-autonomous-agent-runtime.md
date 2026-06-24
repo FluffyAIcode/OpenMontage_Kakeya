@@ -63,6 +63,25 @@ New module `services/agent_runtime/` exposed as `AGENT_RUNTIME_CMD`
 (cloud LLM) next to the gateway; headless Mac stays a video worker; vast does heavy generation. The
 agent uses a cloud LLM (light CPU/network) — it does **not** steal GPU from video.
 
+## 3b. Quality, consistency, governance (added)
+
+Three upgrades toward production-grade, all in `run.py` (LLM-driven, schema-light sidecars):
+
+- **(1) Render quality passthrough.** `generate_clip` renders each scene through the **gateway**
+  `/v1/videos` when `AGENT_GATEWAY_URL` is set (`quality=AGENT_VIDEO_QUALITY`, default `standard`;
+  `high` → Hunyuan native 720p — the tier from ADR 0017), reusing the whole distributed pipeline.
+  Without a gateway URL it falls back to `video_selector` with a `resolution` hint. The runtime is the
+  director/editor; the gateway is the render farm. (`AGENT_GATEWAY_API_KEY` or `~/.kakeya/...` key.)
+- **(2) Cross-scene consistency.** `plan_style_bible` produces ONE fixed `subject`+`style` (a textual
+  "continuity bible") that `direct_video_prompt` embeds verbatim into EVERY shot's prompt, so the
+  recurring subject/style stays consistent across scenes (mitigates the "different dog each shot"
+  gap). Written to `assets/style_bible.json`. Toggle `AGENT_CONSISTENCY` (default on).
+- **(3) Governance reviewer.** `review_plan` is an LLM reviewer over the brief + directed prompts
+  (subject consistency / coherence / prompt quality) → `{approved, issues, revised_prompts}`. With
+  `AGENT_AUTO_REVISE` (default on) flagged prompts are auto-fixed; `AGENT_REQUIRE_APPROVAL=1` gates
+  (halts with the plan written for human approval). Written to `assets/review.json`. Toggle
+  `AGENT_REVIEW` (default on). All visible under `--plan-only` (no GPU).
+
 ## 4. Honest scope / limits
 
 - This is an **MVP "auto" path**, not the full governed `animated-explainer` pipeline (no

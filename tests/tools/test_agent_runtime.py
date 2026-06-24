@@ -26,6 +26,11 @@ if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
 
 def _stub(system: str, user: str) -> str:
     s = system[:120].lower()  # match the prompt PREFIX, before appended skill text
+    if "continuity director" in s:  # style/character bible (cross-scene consistency)
+        return json.dumps({"subject": "a black-and-white Border Collie with a white blaze and amber eyes",
+                            "style": "cinematic, soft cool winter light, 35mm film, muted palette"})
+    if "plan reviewer" in s:  # governance review pass
+        return json.dumps({"approved": True, "issues": [], "revised_prompts": []})
     if "video prompt director" in s:
         # echo the raw scene so the test can verify the DIRECTED prompt is what reaches the generator
         scene = user.split("\n", 1)[0].removeprefix("Scene: ").strip()
@@ -98,6 +103,11 @@ def test_agent_runtime_plan_only(tmp_path):
     assert len(dp) == 2 and all(e["prompt"].startswith("directed cinematic shot, ") for e in dp)
     # no clips/compose happened
     assert not list((tmp_path / "proj" / "assets").glob("scene_*.mp4"))
+    # continuity bible + governance review artifacts were produced
+    bible = json.loads((tmp_path / "proj" / "assets" / "style_bible.json").read_text())
+    assert bible.get("subject") and bible.get("style")
+    review = json.loads((tmp_path / "proj" / "assets" / "review.json").read_text())
+    assert review.get("approved") is True
 
 
 def test_llm_json_extraction():

@@ -44,6 +44,24 @@ CLIP_W = int(os.environ.get("AGENT_CLIP_WIDTH", "1280"))
 CLIP_H = int(os.environ.get("AGENT_CLIP_HEIGHT", "720"))
 
 
+def _flag(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).lower() in ("1", "true", "yes")
+
+
+# (1) per-scene render quality. When AGENT_GATEWAY_URL is set, clips render through the gateway's
+#     /v1/videos (quality=AGENT_VIDEO_QUALITY -> e.g. 'high' = Hunyuan native 720p); else video_selector
+#     gets a resolution hint. (2) AGENT_CONSISTENCY -> a shared subject/style "bible" injected into every
+#     directed prompt for cross-scene consistency. (3) AGENT_REVIEW -> an LLM reviewer pass (+ optional
+#     auto-revise / human-approval gate).
+VIDEO_QUALITY = os.environ.get("AGENT_VIDEO_QUALITY", "standard").strip().lower()
+GATEWAY_URL = os.environ.get("AGENT_GATEWAY_URL", "").strip().rstrip("/")
+CONSISTENCY = _flag("AGENT_CONSISTENCY", "1")
+REVIEW = _flag("AGENT_REVIEW", "1")
+AUTO_REVISE = _flag("AGENT_AUTO_REVISE", "1")
+REQUIRE_APPROVAL = _flag("AGENT_REQUIRE_APPROVAL", "0")
+_QUALITY_RES = {"draft": "480p", "standard": "480p", "high": "720p"}
+
+
 def log(msg: str):
     print(f"[agent] {msg}", flush=True)
 
@@ -128,20 +146,51 @@ def _resolve_video_skill(registry) -> str:
     return txt[:8000]
 
 
-def direct_video_prompt(llm: LLM, scene_desc: str, brief: dict, skill_text: str) -> str:
+def plan_style_bible(llm: LLM, brief: dict, scenes: list) -> dict:
+    """LLM "continuity director": one fixed subject + style description reused across ALL shots.
+
+    Cross-scene consistency is the biggest gap for un-anchored multi-shot generation (the dog looks
+    different each shot). We can't rely on the video model alone, so we pin a textual "bible": a
+    detailed, fixed appearance of the recurring subject + a fixed look, injected verbatim into every
+    directed prompt so the model renders a consistent subject/style across scenes."""
+    sys_p = (
+        "You are OpenMontage's continuity director. Output a JSON object with exactly two string "
+        "fields: 'subject' = a fixed, highly specific visual description of the MAIN recurring "
+        "subject (species/breed, exact colors, distinctive markings, build, age) so it can be "
+        "rendered IDENTICALLY in every shot; 'style' = a fixed look (lighting, color palette, film "
+        "stock/medium, mood). Keep each under 40 words, concrete and positive. Output ONLY the JSON.")
+    descs = " | ".join(s.get("description", "") for s in scenes)[:1500]
+    try:
+        b = llm.complete_json(sys_p, f"Title: {brief.get('title','')}\nTone: {brief.get('tone','')}\n"
+                                     f"Style: {brief.get('style','')}\nScenes: {descs}")
+        return {"subject": str(b.get("subject", "")).strip(), "style": str(b.get("style", "")).strip()}
+    except Exception as exc:  # noqa: BLE001
+        log(f"style-bible skipped ({exc})")
+        return {}
+
+
+def direct_video_prompt(llm: LLM, scene_desc: str, brief: dict, skill_text: str,
+                        bible: dict | None = None) -> str:
     """LLM "prompt director": rewrite a scene into ONE rich, model-appropriate T2V prompt.
 
     Native T2V conditions generation via cross-attention over the text embeddings, so a longer,
     concrete, positive prompt (subject+action+setting+lighting+camera+style) yields a far stronger
-    result than a bare scene description. Guidance comes from the provider's Layer-3 skill."""
+    result than a bare scene description. Guidance comes from the provider's Layer-3 skill. When a
+    continuity `bible` is given, its fixed subject+style are embedded so the subject stays consistent
+    across shots."""
     if not scene_desc:
         return scene_desc
+    anchor = ""
+    if bible and (bible.get("subject") or bible.get("style")):
+        anchor = ("\nCONTINUITY — keep IDENTICAL across all shots; OPEN the prompt by restating the "
+                  f"subject's fixed appearance: SUBJECT: {bible.get('subject','')}. "
+                  f"STYLE: {bible.get('style','')}.")
     sys_p = (
         "You are OpenMontage's video prompt director. Rewrite the scene into ONE rich, concrete "
         "text-to-video prompt for a native text-to-video model. Include subject, action, setting, "
         "lighting, camera framing/movement, and style. Be vivid and specific, ~40-70 words, fully "
         "positive phrasing (describe what to SHOW, never what to avoid), no contradictions. "
-        "Output ONLY the prompt text — no quotes, no JSON, no preamble." + skill_text
+        "Output ONLY the prompt text — no quotes, no JSON, no preamble." + anchor + skill_text
     )
     user = (f"Scene: {scene_desc}\nOverall tone: {brief.get('tone', '')}\n"
             f"Style: {brief.get('style', '')}\nTitle: {brief.get('title', '')}")
@@ -152,6 +201,29 @@ def direct_video_prompt(llm: LLM, scene_desc: str, brief: dict, skill_text: str)
         return scene_desc
     out = " ".join((out or "").strip().strip('"').strip("`").split())
     return out[:600] or scene_desc
+
+
+def review_plan(llm: LLM, brief: dict, scene_plan: dict, prompts: list) -> dict:
+    """LLM "reviewer": governance pass over the plan + directed prompts before rendering.
+
+    Checks subject consistency across shots, coherence/on-brief, and concrete positive prompts.
+    Returns {approved: bool, issues: [...], revised_prompts: [{scene_id, prompt}]}."""
+    sys_p = (
+        "You are OpenMontage's plan reviewer. Given the brief, scene plan, and per-scene directed "
+        "prompts, verify: (1) EVERY shot depicts the SAME subject with consistent appearance, "
+        "(2) the shots form a coherent on-brief sequence, (3) each prompt is concrete and positive. "
+        "Output ONLY a JSON object: {\"approved\": bool, \"issues\": [strings], \"revised_prompts\": "
+        "[{\"scene_id\": str, \"prompt\": str}]}. Include revised_prompts ONLY for shots that need a "
+        "fix (e.g. to enforce subject consistency); omit or leave empty if all good.")
+    payload = {"brief": {k: brief.get(k) for k in ("title", "tone", "style")},
+               "prompts": prompts}
+    try:
+        r = llm.complete_json(sys_p, json.dumps(payload))
+        return {"approved": bool(r.get("approved", True)), "issues": list(r.get("issues", []) or []),
+                "revised_prompts": list(r.get("revised_prompts", []) or [])}
+    except Exception as exc:  # noqa: BLE001
+        log(f"review skipped ({exc})")
+        return {"approved": True, "issues": [], "revised_prompts": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -169,15 +241,67 @@ def _ffmpeg_sine(out: str, seconds: float):
                    capture_output=True, check=True)
 
 
+def _read_gateway_key() -> str:
+    k = os.environ.get("AGENT_GATEWAY_API_KEY", "").strip()
+    if k:
+        return k
+    for p in (Path(os.environ.get("AGENT_GATEWAY_API_KEY_FILE", "")),
+              Path.home() / ".kakeya" / "agent_gateway_api_key"):
+        try:
+            return p.read_text().strip()
+        except OSError:
+            continue
+    return ""
+
+
+def _gateway_clip(prompt: str, out: str, seconds: float, quality: str) -> str:
+    """Render one clip through the gateway's /v1/videos (so 'high' = Hunyuan native 720p).
+
+    The agent runtime is the director/editor; the gateway is the render farm. This reuses the whole
+    distributed pipeline + quality tiers instead of re-implementing provider selection here."""
+    import time
+    import urllib.request
+    headers = {"Content-Type": "application/json"}
+    key = _read_gateway_key()
+    if key:
+        headers["X-API-Key"] = key
+    body = json.dumps({"prompt": prompt, "mode": "video", "quality": quality,
+                       "seconds": float(max(2.0, seconds))}).encode()
+    req = urllib.request.Request(GATEWAY_URL + "/v1/videos", data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        job = json.loads(r.read())
+    jid = job["job_id"]
+    deadline = time.time() + int(os.environ.get("AGENT_GATEWAY_TIMEOUT", "1800"))
+    poll = urllib.request.Request(f"{GATEWAY_URL}/v1/jobs/{jid}", headers=headers)
+    while time.time() < deadline:
+        time.sleep(5)
+        with urllib.request.urlopen(poll, timeout=30) as r:
+            st = json.loads(r.read())
+        if st.get("status") == "done":
+            dl = urllib.request.Request(f"{GATEWAY_URL}/v1/jobs/{jid}/video", headers=headers)
+            with urllib.request.urlopen(dl, timeout=120) as r, open(out, "wb") as f:
+                f.write(r.read())
+            return out
+        if st.get("status") == "error":
+            raise RuntimeError(f"gateway clip failed: {st.get('error')}")
+    raise RuntimeError("gateway clip timed out")
+
+
+def _quality_to_res(quality: str) -> str:
+    return _QUALITY_RES.get(quality, "480p")
+
+
 def generate_clip(registry, prompt: str, out: str, seconds: float, idx: int) -> str:
     if FAKE:
         _ffmpeg_clip(out, seconds, ["darkblue", "darkgreen", "darkred", "purple", "teal"][idx % 5])
         return out
+    if GATEWAY_URL:  # render via the gateway (quality tier -> e.g. Hunyuan native 720p for 'high')
+        return _gateway_clip(prompt, out, seconds, VIDEO_QUALITY)
     sel = registry.get("video_selector")
     if sel is None:
         raise RuntimeError("no video_selector tool available")
     res = sel.execute({"prompt": prompt, "aspect_ratio": "16:9", "duration": str(int(seconds)),
-                       "output_path": out})
+                       "resolution": _quality_to_res(VIDEO_QUALITY), "output_path": out})
     if not res.success:
         raise RuntimeError(f"video generation failed: {res.error}")
     return res.data.get("output") or res.data.get("output_path") or out
@@ -317,21 +441,66 @@ def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None 
 
     # 3b) prompt director (LLM, no GPU): rewrite each scene into a rich native-T2V prompt up front,
     # so the directed prompts can be inspected (and validated via --plan-only) before any rendering.
+    # 3a) continuity bible (cross-scene consistency): one fixed subject+style for ALL shots.
+    bible = {}
+    if CONSISTENCY:
+        bible = plan_style_bible(llm, brief, scenes)
+        if bible.get("subject") or bible.get("style"):
+            log(f"continuity: subject='{bible.get('subject','')[:60]}' style='{bible.get('style','')[:40]}'")
+            try:
+                (assets / "style_bible.json").write_text(json.dumps(bible, indent=2))
+            except OSError:
+                pass
+
+    # 3b) prompt director (LLM, no GPU): rewrite each scene into a rich native-T2V prompt up front
+    # (with the continuity anchor), so the directed prompts can be inspected (--plan-only) and
+    # reviewed before any rendering.
     vskill = _resolve_video_skill(registry)
     log(f"prompt-director: loaded provider guidance ({len(vskill)} chars)")
     director_prompts = []
     for i, sc in enumerate(scenes):
         raw = sc.get("description", prompt)
-        vprompt = direct_video_prompt(llm, raw, brief, vskill)
+        vprompt = direct_video_prompt(llm, raw, brief, vskill, bible)
         director_prompts.append({"scene_id": sc.get("id", f"sc{i}"), "raw": raw, "prompt": vprompt})
         log(f"scene {i}: directed prompt — {vprompt[:80]}")
+
+    # 3c) governance: reviewer pass over the plan + directed prompts (consistency / coherence /
+    # prompt quality). Optionally auto-revise flagged prompts, and/or gate on human approval.
+    if REVIEW:
+        rev = review_plan(llm, brief, scene_plan, director_prompts)
+        log(f"review: approved={rev['approved']} issues={len(rev['issues'])}")
+        for it in rev["issues"][:5]:
+            log(f"  - {str(it)[:100]}")
+        if AUTO_REVISE and rev.get("revised_prompts"):
+            by_id = {d["scene_id"]: d for d in director_prompts}
+            n = 0
+            for rp in rev["revised_prompts"]:
+                d = by_id.get(rp.get("scene_id"))
+                if d and rp.get("prompt"):
+                    d["prompt"] = " ".join(str(rp["prompt"]).split())[:600]; n += 1
+            if n:
+                log(f"review: auto-revised {n} prompt(s)")
+        try:
+            (assets / "review.json").write_text(json.dumps(rev, indent=2))
+        except OSError:
+            pass
+        if REQUIRE_APPROVAL and not rev["approved"]:
+            dp_path = assets / "director_prompts.json"
+            try:
+                dp_path.write_text(json.dumps(director_prompts, indent=2))
+            except OSError:
+                pass
+            log(f"APPROVAL REQUIRED: review not approved; plan written to {dp_path}. "
+                "Set AGENT_REQUIRE_APPROVAL=0 (or fix the brief) and re-run to proceed.")
+            raise SystemExit(3)
+
     dp_path = assets / "director_prompts.json"
     try:
         dp_path.write_text(json.dumps(director_prompts, indent=2))
     except OSError:
         pass
     if plan_only:
-        log(f"plan-only: planning + director done, skipping asset generation/compose -> {dp_path}")
+        log(f"plan-only: planning + director + review done, skipping render -> {dp_path}")
         return str(dp_path)
 
     # 4) assets: per-scene video (video_selector -> best provider) from the DIRECTED prompt
