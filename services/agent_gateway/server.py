@@ -157,9 +157,11 @@ QUALITY_PRESETS: dict[str, dict] = {
     "draft": {"fw_width": 384, "fw_height": 224, "fw_frames": 13, "proposer_steps": 5,
               "refine_steps": 12, "out_width": 640, "out_height": 384, "frames": 25,
               "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
-    "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
+    # standard = native T2V @ 832x480 DIRECT (same reliable path as 'high'; the tiled v2v refine
+    # hangs in the worker thread, so all tiers use direct native generation, differing by res/frames).
+    "standard": {"fw_width": 832, "fw_height": 480, "fw_frames": 25, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
-                 "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
+                 "fps": 16, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
     # 'high' = NATIVE T2V generation at 1280x720 directly on the strongest framework worker (the
     # CUDA box), no v2v refine. The distributed v2v refine op hangs in the worker's gRPC thread
     # after denoise (VAE decode never returns; framework/native-T2V at 720p works fine in-thread),
