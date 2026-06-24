@@ -1207,7 +1207,17 @@ never enter OpenMontage's core deps (D5/D7). Flow: `apply_chat_template(enable_t
 `KAKEYA_GRPC_ADDRESS=127.0.0.1:51051`, `KAKEYA_TOKENIZER_ID` (→ `KAKEYA_VERIFIER_ID` fallback). Head
 deps in `~/.venv-distwan`: grpcio 1.81, transformers 5.12, mlx-lm 0.31. **Owner confirmed live:**
 `--check-llm` → `provider=kakeya_grpc model=kakeya-local` → `OK`. Offline guard test asserts a missing
-`KAKEYA_REPO` yields a clear `RuntimeError` (no obscure ImportError, no core-dep creep). `3 passed`.
+`KAKEYA_REPO` yields a clear `RuntimeError` (no obscure ImportError, no core-dep creep).
+
+**`--plan-only` (unblock testing without the gateway key).** The public gateway enforces
+`X-API-Key` (`AGENT_GATEWAY_API_KEY`), which the owner couldn't retrieve — repeatedly blocking
+`mode=agent` smoke tests via `agent.kakeya.ai`. Key insight: the agent runtime is a plain module;
+the gateway is just a wrapper. Added `--plan-only` — runs LLM planning (brief→script→scene_plan) +
+the prompt director, writes `director_prompts.json`, and **exits before any video render**. So the
+owner validates Gemma + director on the head in minutes with **no GPU, no gateway, no key**:
+`python -m services.agent_runtime.run --prompt "…" --plan-only`. Refactored `run()` to compute all
+directed prompts up front (cleaner separation of director vs. generation). Offline test asserts
+plan-only emits 2 directed prompts and renders no clips. `4 passed`.
 
 ---
 

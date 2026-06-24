@@ -82,6 +82,24 @@ def test_agent_runtime_end_to_end(tmp_path, monkeypatch):
         assert entry["prompt"] != entry["raw"], entry
 
 
+def test_agent_runtime_plan_only(tmp_path):
+    """--plan-only path: LLM planning + prompt-director, NO video render. Validates the directed
+    prompts (Gemma + director) can be produced/inspected without any GPU/gateway/key."""
+    import importlib
+    import services.agent_runtime.run as run_mod
+    importlib.reload(run_mod)
+    from services.agent_runtime.llm import LLM
+
+    res = run_mod.run("a red fox in a snowy forest", "", llm=LLM(stub=_stub),
+                      project_dir=tmp_path / "proj", plan_only=True)
+    dp_path = Path(res)
+    assert dp_path.name == "director_prompts.json" and dp_path.exists()
+    dp = json.loads(dp_path.read_text())
+    assert len(dp) == 2 and all(e["prompt"].startswith("directed cinematic shot, ") for e in dp)
+    # no clips/compose happened
+    assert not list((tmp_path / "proj" / "assets").glob("scene_*.mp4"))
+
+
 def test_llm_json_extraction():
     from services.agent_runtime.llm import LLM
     llm = LLM(stub=lambda s, u: 'prefix ```json\n{"a": 1, "b": {"c": 2}}\n``` suffix')

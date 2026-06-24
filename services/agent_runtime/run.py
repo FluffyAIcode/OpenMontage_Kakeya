@@ -243,7 +243,8 @@ def plan_scenes(llm: LLM, script: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # orchestration
 # --------------------------------------------------------------------------- #
-def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None = None) -> str:
+def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None = None,
+        plan_only: bool = False) -> str:
     from lib.checkpoint import write_checkpoint
     from schemas.artifacts import validate_artifact
     from tools.tool_registry import registry
@@ -281,17 +282,32 @@ def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None 
 
     # 4) assets: per-scene video (video_selector -> best provider) + narration; one music track
     sect_by_id = {s["id"]: s for s in script.get("sections", [])}
+
+    # 3b) prompt director (LLM, no GPU): rewrite each scene into a rich native-T2V prompt up front,
+    # so the directed prompts can be inspected (and validated via --plan-only) before any rendering.
     vskill = _resolve_video_skill(registry)
     log(f"prompt-director: loaded provider guidance ({len(vskill)} chars)")
-    asset_list, cuts, director_prompts = [], [], []
+    director_prompts = []
     for i, sc in enumerate(scenes):
-        dur = max(2.0, float(sc.get("end_seconds", 0)) - float(sc.get("start_seconds", 0)) or 5.0)
-        vid = str(assets / f"scene_{i}.mp4")
         raw = sc.get("description", prompt)
         vprompt = direct_video_prompt(llm, raw, brief, vskill)
         director_prompts.append({"scene_id": sc.get("id", f"sc{i}"), "raw": raw, "prompt": vprompt})
         log(f"scene {i}: directed prompt — {vprompt[:80]}")
-        vid = generate_clip(registry, vprompt, vid, dur, i)
+    dp_path = assets / "director_prompts.json"
+    try:
+        dp_path.write_text(json.dumps(director_prompts, indent=2))
+    except OSError:
+        pass
+    if plan_only:
+        log(f"plan-only: planning + director done, skipping asset generation/compose -> {dp_path}")
+        return str(dp_path)
+
+    # 4) assets: per-scene video (video_selector -> best provider) from the DIRECTED prompt
+    asset_list, cuts = [], []
+    for i, sc in enumerate(scenes):
+        dur = max(2.0, float(sc.get("end_seconds", 0)) - float(sc.get("start_seconds", 0)) or 5.0)
+        vid = str(assets / f"scene_{i}.mp4")
+        vid = generate_clip(registry, director_prompts[i]["prompt"], vid, dur, i)
         asset_list.append({"id": f"v{i}", "type": "video", "path": vid, "source_tool": "video_selector",
                            "scene_id": sc.get("id", f"sc{i}")})
         cuts.append({"id": f"cut{i}", "source": vid, "in_seconds": 0.0, "out_seconds": dur, "speed": 1.0})
@@ -311,10 +327,6 @@ def run(prompt: str, out: str, llm: LLM | None = None, project_dir: Path | None 
                            "scene_id": scenes[0].get("id", "sc0") if scenes else "sc0"})
     asset_manifest = {"version": "1.0", "assets": asset_list}
     validate_artifact("asset_manifest", asset_manifest); ck("assets", {"asset_manifest": asset_manifest})
-    try:
-        (assets / "director_prompts.json").write_text(json.dumps(director_prompts, indent=2))
-    except OSError:
-        pass
 
     # 5) edit_decisions (deterministic: clips in order, ffmpeg runtime)
     narrations = [a["path"] for a in asset_list if a["type"] == "narration"]
@@ -398,13 +410,19 @@ def main():
     ap.add_argument("--out", help="output mp4 path")
     ap.add_argument("--check-llm", action="store_true",
                     help="only verify the LLM endpoint round-trips, then exit (no GPU/pipeline)")
+    ap.add_argument("--plan-only", action="store_true",
+                    help="run LLM planning + prompt-director only (no video render); writes "
+                         "director_prompts.json. Fast, no-GPU, no-gateway, no-key validation.")
     args = ap.parse_args()
     if args.check_llm:
         raise SystemExit(check_llm())
-    if not args.prompt or not args.out:
-        ap.error("--prompt and --out are required (unless --check-llm)")
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    run(args.prompt, args.out)
+    if not args.prompt:
+        ap.error("--prompt is required (unless --check-llm)")
+    if not args.plan_only and not args.out:
+        ap.error("--out is required (unless --check-llm or --plan-only)")
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    print(run(args.prompt, args.out or "", plan_only=args.plan_only))
 
 
 if __name__ == "__main__":

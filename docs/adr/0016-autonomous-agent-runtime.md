@@ -92,6 +92,12 @@ idea/script/scene_plan/assets/edit. The test asserts each scene received a **dir
   before a full (slow) pipeline run. The head's live config uses **`AGENT_LLM=kakeya_grpc`** against
   the Gemma 26B gRPC runtime (`KAKEYA_GRPC_ADDRESS=127.0.0.1:51051`, `KAKEYA_REPO`, `KAKEYA_TOKENIZER_ID`)
   — `--check-llm` prints `OK`, confirming end-to-end reachability.
+- **`--plan-only`**: runs the LLM planning (brief→script→scene_plan) + the prompt director and writes
+  `director_prompts.json`, then exits **before any video render**. This is the fast,
+  **no-GPU / no-gateway / no-API-key** way to validate that the LLM + director actually work on the
+  head: `python -m services.agent_runtime.run --prompt "…" --plan-only`. The gateway's `X-API-Key`
+  (set as `AGENT_GATEWAY_API_KEY`) is only needed for the *public* path; the runtime itself is a plain
+  module and needs no key — run it directly to verify the feature.
 - Configure premium video provider for production-grade clips (the quality answer from the
   draft-vs-premium discussion).
 - Grow toward the governed pipeline (proposal/approval/reviewer, more director skills) and more
