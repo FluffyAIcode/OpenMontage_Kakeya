@@ -1237,6 +1237,34 @@ owner's local plan_script patch into the repo so head==repo, no divergence.)
 
 ---
 
+## Iteration 44 — new Blackwell vast node + BrokenPipe root-cause (held-SSH) → tmux mode
+
+Wired a new vast box (RTX PRO 6000 **Blackwell**, 96 GB) as the 3rd node and chased an
+`INTERNAL: BrokenPipeError` that killed real jobs.
+
+- **Onboard:** authorized the head key (fixed a recurring *merged authorized_keys line* — the existing
+  key lacked a trailing newline, so an appended key concatenated and broke both), repointed
+  `~/.kakeya/vast.env`, verified Blackwell torch (2.12.1+cu130, sm_120 matmul OK), deps preinstalled.
+- **BrokenPipe root cause:** the **held-worker** mode runs the worker as a child of a persistent SSH
+  with stdout/stderr piped over that SSH. Diffusion writes progress bars to stderr; the fragile SSH
+  channel got `Connection reset by peer`, so the worker's write raised `BrokenPipeError` (surfaced as
+  the op error) AND the reset killed the worker mid-op (no Python traceback → killed by signal). The
+  heavy stderr traffic likely *caused* the resets. Verified the op itself is fine: framework AND v2v
+  refine run to completion **directly on the box** (`REFINE_OK`, ~6 s).
+- **Fix:** this box's image (unlike the earlier one) **keeps tmux/processes alive after SSH logout**
+  (tested). So switched it to non-held **tmux** mode (`VAST_HOLD_WORKER=0`): the worker is detached
+  from SSH, output goes to a tmux pane/file, and SSH resets no longer kill it. Verified: the worker
+  now survives and the 720p refine runs to 14/14 on the worker (previously it was killed → BrokenPipe).
+  Draft `mode=video` jobs complete end-to-end over the public gateway. Held-mode path was also
+  hardened (--preload, worker output → file, HF/tqdm bars off) for boxes that need it.
+- **Remaining (separate) issue:** for `quality=high` (full-frame 720p single-refine) the worker
+  computes the result but the gRPC progress/result **stream wedges over the SSH `-L` tunnel after
+  ~8 messages** — a transport flow-control deadlock, NOT the original crash. Needs a tunnel/transport
+  fix (gRPC window/keepalive tuning on the orchestrator channel, chunked result, or a sturdier
+  forward). Draft works; standard (tiled) likely avoids the single large stream.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
