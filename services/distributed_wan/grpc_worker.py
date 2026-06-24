@@ -101,6 +101,15 @@ class CudaBackend:
         self.pipe = WanPipeline.from_pretrained(self.MODEL, vae=vae, torch_dtype=torch.bfloat16)
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config, flow_shift=3.0)
         self.pipe.to("cuda")
+        # VAE tiling/slicing: REQUIRED for the 720p refine path. The Wan VAE encode+decode of a
+        # full-frame 1280x720 clip in fp32 otherwise allocates a huge contiguous tensor and HANGS
+        # (observed: refine denoise completes, then the worker is stuck in VAE decode at GPU 0%).
+        # Tiling processes the frame in spatial tiles; slicing splits the temporal batch.
+        for _vae in (vae,):
+            try:
+                _vae.enable_tiling(); _vae.enable_slicing()
+            except Exception:  # noqa: BLE001
+                pass
         self.pipe.load_lora_weights(self.LORA_REPO, weight_name=self.LORA_FILE, adapter_name="causvid")
         self.v2v = WanVideoToVideoPipeline(**{k: self.pipe.components[k] for k in
                                               ("tokenizer", "text_encoder", "transformer", "vae", "scheduler")})
@@ -120,6 +129,10 @@ class CudaBackend:
         pipe = WanImageToVideoPipeline.from_pretrained(self.i2v_model, vae=vae, image_encoder=image_encoder,
                                                        torch_dtype=torch.bfloat16)
         pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=5.0)
+        try:  # tiling/slicing keeps 720P I2V VAE encode/decode within memory (see load())
+            vae.enable_tiling(); vae.enable_slicing()
+        except Exception:  # noqa: BLE001
+            pass
         if os.environ.get("CUDA_I2V_OFFLOAD", "0").lower() in ("1", "true", "yes"):
             pipe.enable_model_cpu_offload()
         else:
@@ -185,6 +198,99 @@ class CudaBackend:
                            strength=req.strength or 0.6, num_inference_steps=req.steps or 16,
                            guidance_scale=5.0, generator=g, callback_on_step_end=self._cb(q, req.steps or 16))
             return _to_uint8(out.frames[0])
+
+
+# --------------------------------------------------------------------------- #
+# HunyuanVideo backend (diffusers) — a higher-quality open-source provider (ADR 0017).
+# T2V via HunyuanVideoPipeline, I2V via HunyuanVideoImageToVideoPipeline. 13B; native 720p,
+# ~5s clips. Heavy: CPU offload on by default (HUNYUAN_OFFLOAD=1). CUDA/vast only (no MLX).
+# --------------------------------------------------------------------------- #
+class HunyuanBackend:
+    MODEL = os.environ.get("HUNYUAN_MODEL", "hunyuanvideo-community/HunyuanVideo")
+
+    def __init__(self, ops):
+        self.ops = ops or ["framework"]
+        self._lock = threading.Lock()
+        self.pipe = None
+        self._i2v = None
+        self.offload = os.environ.get("HUNYUAN_OFFLOAD", "1").lower() in ("1", "true", "yes")
+
+    def _load_t2v(self):
+        if self.pipe is not None:
+            return
+        import torch
+        from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel
+        torch.set_grad_enabled(False)
+        tr = HunyuanVideoTransformer3DModel.from_pretrained(self.MODEL, subfolder="transformer",
+                                                            torch_dtype=torch.bfloat16)
+        p = HunyuanVideoPipeline.from_pretrained(self.MODEL, transformer=tr, torch_dtype=torch.float16)
+        p.vae.enable_tiling()
+        p.enable_model_cpu_offload() if self.offload else p.to("cuda")
+        self.pipe = p
+
+    def _load_i2v(self):
+        if self._i2v is not None:
+            return
+        import torch
+        from diffusers import HunyuanVideoImageToVideoPipeline
+        p = HunyuanVideoImageToVideoPipeline.from_pretrained(self.MODEL, torch_dtype=torch.float16)
+        p.vae.enable_tiling()
+        p.enable_model_cpu_offload() if self.offload else p.to("cuda")
+        self._i2v = p
+
+    def health(self):
+        import torch
+        return pb.HealthReply(device="cuda" if torch.cuda.is_available() else "cpu",
+                              backend="hunyuan-diffusers", model=self.MODEL, ops=self.ops, ready=False,
+                              note=torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+                              relative_speed=float(os.environ.get("HUNYUAN_RELATIVE_SPEED", "0.8")))
+
+    def _cb(self, q, total):
+        def cb(pipe, i, t, kw):
+            try:
+                q.put_nowait(("p", (i + 1) / max(total, 1)))
+            except queue.Full:
+                pass
+            return kw
+        return cb
+
+    @staticmethod
+    def _snap(req):
+        w = max(16, (req.width or 1280) // 16 * 16)
+        h = max(16, (req.height or 720) // 16 * 16)
+        nf = req.num_frames or 61
+        if nf % 4 != 1:                       # Hunyuan needs num_frames == 4k+1
+            nf = (nf // 4) * 4 + 1
+        return w, h, nf
+
+    def framework(self, req, q):
+        import torch
+        if getattr(req, "init_image", b"") and "i2v" in self.ops:
+            return self.i2v(req, q)
+        self._load_t2v()
+        w, h, nf = self._snap(req)
+        with self._lock:
+            g = torch.Generator("cpu").manual_seed(req.seed or 42)
+            out = self.pipe(prompt=req.prompt, height=h, width=w, num_frames=nf,
+                            num_inference_steps=req.steps or 30, generator=g,
+                            callback_on_step_end=self._cb(q, req.steps or 30))
+            return _to_uint8(out.frames[0])
+
+    def i2v(self, req, q):
+        import torch
+        from PIL import Image
+        self._load_i2v()
+        w, h, nf = self._snap(req)
+        img = Image.open(io.BytesIO(req.init_image)).convert("RGB").resize((w, h))
+        with self._lock:
+            g = torch.Generator("cpu").manual_seed(req.seed or 42)
+            out = self._i2v(image=img, prompt=req.prompt, height=h, width=w, num_frames=nf,
+                            num_inference_steps=req.steps or 30, generator=g,
+                            callback_on_step_end=self._cb(q, req.steps or 30))
+            return _to_uint8(out.frames[0])
+
+    def refine(self, req, q):
+        raise RuntimeError("hunyuan backend has no refine op; use framework/i2v")
 
 
 # --------------------------------------------------------------------------- #
@@ -390,7 +496,10 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
                 result["frames"] = op_fn(request, q)
                 result["t"] = time.time() - t
             except Exception as exc:  # noqa: BLE001
+                import traceback as _tb
                 result["err"] = f"{type(exc).__name__}: {exc}"
+                print(f"[grpc_worker] op error: {result['err']}", flush=True)
+                _tb.print_exc()
             finally:
                 q.put(("done", None))
 
@@ -413,8 +522,12 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
         if "err" in result:
             context.abort(grpc.StatusCode.INTERNAL, result["err"])
             return
-        yield pb.Progress(pct=1.0, stage="done", done=True,
-                          mp4=frames_to_mp4(result["frames"]), gen_seconds=float(result["t"]))
+        nfr = len(result["frames"]) if result.get("frames") is not None else 0
+        print(f"[grpc_worker] denoise done ({nfr} frames); encoding mp4...", flush=True)
+        _mp4 = frames_to_mp4(result["frames"])
+        print(f"[grpc_worker] encoded mp4 {len(_mp4)} bytes; sending final message...", flush=True)
+        yield pb.Progress(pct=1.0, stage="done", done=True, mp4=_mp4, gen_seconds=float(result["t"]))
+        print("[grpc_worker] final message sent OK", flush=True)
 
     def GenerateFramework(self, request, context):
         yield from self._stream(self.backend.framework, request, context)
@@ -423,9 +536,125 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
         yield from self._stream(self.backend.refine, request, context)
 
 
+# --------------------------------------------------------------------------- #
+# Subprocess backend — runs the heavy CUDA generation in a CLEAN child process.
+#
+# Why: heavy video VAE encode/decode (Hunyuan, WAN v2v) HANGS when run inside the gRPC servicer's
+# worker thread (denoise completes, then stuck at GPU 0%). The same op runs fine in a standalone
+# process's main thread. So we run the real backend in a spawned child process whose MAIN thread does
+# all CUDA work; the gRPC side only does IPC + a small file read (no CUDA on the gRPC threads).
+# Progress is streamed back per step; the result frames are handed over via a temp .npy file.
+# --------------------------------------------------------------------------- #
+_REQ_TYPES = {"framework": pb.FrameworkRequest, "refine": pb.RefineRequest}
+
+
+def _make_real_backend(kind, ops):
+    if kind == "cuda":
+        return CudaBackend()
+    if kind == "hunyuan":
+        return HunyuanBackend(ops)
+    raise ValueError(f"subproc unsupported backend: {kind}")
+
+
+def _subproc_main(cmd_q, res_q, kind, ops):
+    """Child process (spawn): load the model and run ops in the MAIN thread. CUDA lives only here."""
+    import os
+    import numpy as np
+    import tempfile
+    import traceback
+    try:
+        backend = _make_real_backend(kind, ops)
+        if kind == "cuda":
+            backend.load()
+        elif kind == "hunyuan":
+            backend._load_t2v()
+        res_q.put(("ready", None))
+    except Exception as exc:  # noqa: BLE001
+        res_q.put(("fatal", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
+        return
+
+    class _PQ:  # forwards backend progress (q.put_nowait(("p", pct))) to the parent
+        def put_nowait(self, item):
+            try:
+                res_q.put(("p", float(item[1])))
+            except Exception:  # noqa: BLE001
+                pass
+        put = put_nowait
+
+    tmpdir = os.environ.get("DISTWAN_TMP", "/workspace")
+    while True:
+        job = cmd_q.get()
+        if job is None:
+            break
+        op_name, req_bytes, req_type = job
+        try:
+            req = _REQ_TYPES[req_type]()
+            req.ParseFromString(req_bytes)
+            frames = getattr(backend, op_name)(req, _PQ())
+            fd, path = tempfile.mkstemp(suffix=".npy", dir=tmpdir)
+            os.close(fd)
+            np.save(path, frames)
+            res_q.put(("done", path))
+        except Exception as exc:  # noqa: BLE001
+            res_q.put(("err", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
+
+
+class SubprocBackend:
+    """Proxy that runs `kind` in a persistent spawned child (CUDA off the gRPC threads)."""
+
+    def __init__(self, kind, ops):
+        import multiprocessing as mp
+        self.kind = kind
+        self.ops = ops or ["framework"]
+        self._lock = threading.Lock()
+        ctx = mp.get_context("spawn")
+        self.cmd_q = ctx.Queue()
+        self.res_q = ctx.Queue()
+        self.proc = ctx.Process(target=_subproc_main, args=(self.cmd_q, self.res_q, kind, self.ops),
+                                daemon=True)
+        self.proc.start()
+        print(f"[grpc_worker] subproc backend '{kind}' child pid={self.proc.pid} loading model...",
+              flush=True)
+
+    def health(self):
+        spd = float(os.environ.get("SUBPROC_RELATIVE_SPEED", "0.8" if self.kind == "hunyuan" else "1.0"))
+        return pb.HealthReply(device="cuda", backend=f"{self.kind}-subproc", model=self.kind,
+                              ops=self.ops, ready=self.proc.is_alive(),
+                              note=f"subprocess worker pid={self.proc.pid}", relative_speed=spd)
+
+    def _run(self, op_name, req, req_type, q):
+        import numpy as np
+        with self._lock:
+            self.cmd_q.put((op_name, req.SerializeToString(), req_type))
+            while True:
+                kind, val = self.res_q.get()
+                if kind == "p":
+                    try:
+                        q.put_nowait(("p", val))
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif kind == "ready":
+                    continue  # model finished loading; keep waiting for this job's result
+                elif kind == "done":
+                    frames = np.load(val)
+                    try:
+                        os.unlink(val)
+                    except OSError:
+                        pass
+                    return frames
+                elif kind in ("err", "fatal"):
+                    raise RuntimeError(val)
+
+    def framework(self, req, q):
+        return self._run("framework", req, "framework", q)
+
+    def refine(self, req, q):
+        return self._run("refine", req, "refine", q)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--backend", choices=["cuda", "mlx", "test"], default="cuda")
+    ap.add_argument("--backend", choices=["cuda", "mlx", "test", "hunyuan"], default="cuda")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=50051)
     ap.add_argument("--preload", action="store_true")
@@ -433,14 +662,23 @@ def main():
     ap.add_argument("--mlx-ops", default=os.environ.get("MLX_OPS", "framework"))
     ap.add_argument("--ops", default=os.environ.get("WORKER_OPS", ""),
                     help="restrict advertised ops, e.g. 'refine' to make a CUDA box refine-only")
+    ap.add_argument("--subproc", action="store_true",
+                    help="run the (cuda/hunyuan) backend in a spawned child process so heavy CUDA "
+                         "decode runs off the gRPC threads (fixes the in-thread VAE-decode hang).")
     args = ap.parse_args()
 
-    if args.backend == "cuda":
+    if args.subproc and args.backend in ("cuda", "hunyuan"):
+        _default = "framework,refine,i2v" if args.backend == "cuda" else "framework,i2v"
+        _ops = [o.strip() for o in (args.ops or _default).split(",") if o.strip()]
+        backend = SubprocBackend(args.backend, _ops)
+    elif args.backend == "cuda":
         backend = CudaBackend()
         if args.preload:
             backend.load()
     elif args.backend == "test":
         backend = TestBackend()
+    elif args.backend == "hunyuan":
+        backend = HunyuanBackend([o.strip() for o in (args.ops or "framework,i2v").split(",") if o.strip()])
     else:
         backend = MlxBackend(args.mlx_model_dir, [o.strip() for o in args.mlx_ops.split(",") if o.strip()])
 

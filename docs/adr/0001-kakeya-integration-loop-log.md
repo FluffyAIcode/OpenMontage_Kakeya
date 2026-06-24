@@ -1122,6 +1122,223 @@ auto-recovery. (Caveat: the ~84 G I2V model re-downloads unless `HF_HOME` is on 
 
 ---
 
+## Iteration 41 — Gap B Phase 1: autonomous agent runtime (mode=agent) — ADR 0016
+
+**Finding:** OpenMontage has **no Python pipeline runner** — the host LLM is normally the
+orchestrator. So `mode=agent` integration = building a new **autonomous agent runtime** (a cloud-LLM
+reasoner + tool-calling loop). In-repo LLM is only `kakeya_llm` (mechanical).
+
+**Built:** `services/agent_runtime/` (`AGENT_RUNTIME_CMD`):
+- `llm.py` — urllib-only cloud LLM client (`AGENT_LLM=anthropic|openai|kakeya|stub`, auto-detect).
+- `run.py` — unattended orchestrator: LLM → brief→script→scene_plan (schema-validated + checkpointed
+  via `lib/checkpoint`), assets via `video_selector` (auto-routes to best provider; premium if
+  configured, else WAN draft) + `tts_selector` + `music_gen`, deterministic edit → `audio_mixer` +
+  `video_compose` (ffmpeg) → final mp4. `AGENT_RUNTIME_FAKE_ASSETS=1` for CI.
+
+**Topology:** agent runtime on the head Mac CPU (cloud LLM, doesn't steal video GPU); headless = video
+worker; vast = heavy gen — the cost/stability recommendation.
+
+**Validated offline (no keys/GPU):** stub LLM + ffmpeg fixtures → full plan→validate→checkpoint→
+assets→mix→compose → valid h264 mp4 + checkpoints. 23 tests pass (runtime+gateway+pipeline).
+
+**Honest scope:** MVP "auto" path (no research/proposal/approval/reviewer governance). **Needs a
+cloud LLM key** to actually run; quality is provider-bounded (WAN draft unless a premium video
+provider key is set — then `video_selector` auto-upgrades). Not yet "all skills". Live `mode=agent`
+test on agent.kakeya.ai pending the key.
+
+---
+
+## Iteration 42 — A/B: HunyuanVideo vs WAN (real frames) → adopt Hunyuan as quality layer (ADR 0017)
+
+Same prompt (border collie, snowy forest, cinematic), both 1280×720 ~2s on vast Blackwell.
+- **WAN** (`quality=high`: 1.3B T2V seed → I2V-14B): frame = chaotic abstract blobs, **no recognizable
+  dog/forest** — unusable. Root cause: garbage low-res 1.3B seed amplified by I2V.
+- **Hunyuan** (`hunyuanvideo-community/HunyuanVideo`, 45f/30steps, no offload): frame = **coherent,
+  photorealistic** dog in a snowy forest, cinematic DoF — production-looking.
+
+**Verdict (frame-level visual judgment): adopt HunyuanVideo as the default quality layer.** Night-and-
+day. Caveats: ~8 min / 2s clip @720p (~13–16 s/step), VRAM-heavy (evicted the 85 G WAN worker to avoid
+OOM), prompt adherence imperfect (rendered a Shiba-type dog), long-form still needs Hunyuan-I2V,
+license stricter (Tencent community). Added `HunyuanBackend` to `grpc_worker.py` (`--backend hunyuan`,
+ops framework/i2v). Next: register `hunyuan_video` as a provider for `video_selector`/agent; resolve
+WAN-14B vs Hunyuan VRAM (load-on-demand); wire Hunyuan-I2V for continuity.
+
+---
+
+## Iteration 43 — agent runtime: LLM "prompt director" step (ADR 0016, per user)
+
+The user clarified the "LLM prompt director" is **already in OpenMontage's architecture** (the
+Layer-3 video skills) and asked to keep executing the agent-runtime integration per ADR 0016 —
+i.e. *activate* that existing knowledge, not invent a new step. Implemented in
+`services/agent_runtime/run.py`:
+
+- **`_resolve_video_skill(registry)`** — reads the `agent_skills` advertised by the video provider
+  `video_selector` routes to (e.g. `ai-video-gen`/`ltx2`) from `.agents/skills` or `.claude/skills`,
+  and feeds that prompting guidance to the LLM. So per-scene prompts are written the way the chosen
+  model wants, sourced from the skills OpenMontage already ships.
+- **`direct_video_prompt(llm, scene, brief, skill)`** — rewrites each scene description into ONE
+  rich native-T2V prompt (subject+action+setting+lighting+camera+style, ~40–70 words, positive
+  phrasing). This is the cross-attention insight from ADR 0015: **enrich the text condition and
+  hand a strong prompt to native T2V** instead of refining a weak low-res seed via I2V. Falls back
+  to the raw scene on any LLM error. Needs **no video GPU** — runs as soon as the LLM is up.
+- Directed prompts are persisted to `assets/director_prompts.json` for transparency; the assets
+  loop now generates from the **directed** prompt (not the bare scene description).
+
+**Validation (offline, no keys/GPU):** `tests/tools/test_agent_runtime.py` extended — the stub LLM
+handles the "video prompt director" system prompt and the test asserts each scene received a
+directed prompt (`startswith "directed cinematic shot, "`, `!= raw`) via `director_prompts.json`.
+`2 passed`.
+
+**LLM endpoint smoke test (`--check-llm`).** The head now runs the Kakeya **Gemma 26B** runtime
+(gRPC :51051, kept alive via `caffeinate`) next to the gateway (:8088, `/healthz agent_runtime:true`).
+Added `python -m services.agent_runtime.run --check-llm`: one tiny LLM round-trip prints
+provider/model + latency, exits 0 (OK) / 1 (endpoint error) / 2 (no endpoint, provider=stub) — so the
+reasoner is verified in ~seconds before committing to a 20–30 min pipeline run. Cloud agent cannot
+submit `mode=agent` directly (gateway enforces `X-API-Key`); the live planning+director run is driven
+by the key holder.
+
+**Live transport = `kakeya_grpc` (direct gRPC, not the HTTP shim).** Folded the head's working
+provider into the repo: `AGENT_LLM=kakeya_grpc` calls the Kakeya engine's native gRPC `RuntimeService`
+at token-id level (the stable surface — the OpenAI HTTP shim is deprecated/single-session). It is an
+**external dependency contract** — `KAKEYA_REPO` must point at a Kakeya checkout (top-level `kakeya`
+pkg + `sdks/python`); `kakeya`/`transformers` import **lazily** only when selected, so grpc/transformers
+never enter OpenMontage's core deps (D5/D7). Flow: `apply_chat_template(enable_thinking=False)` →
+`Client.create_session(eos_token_ids)` → `append` → `generate(max_tokens)` → `decode`. Env:
+`KAKEYA_GRPC_ADDRESS=127.0.0.1:51051`, `KAKEYA_TOKENIZER_ID` (→ `KAKEYA_VERIFIER_ID` fallback). Head
+deps in `~/.venv-distwan`: grpcio 1.81, transformers 5.12, mlx-lm 0.31. **Owner confirmed live:**
+`--check-llm` → `provider=kakeya_grpc model=kakeya-local` → `OK`. Offline guard test asserts a missing
+`KAKEYA_REPO` yields a clear `RuntimeError` (no obscure ImportError, no core-dep creep).
+
+**`--plan-only` (unblock testing without the gateway key).** The public gateway enforces
+`X-API-Key` (`AGENT_GATEWAY_API_KEY`), which the owner couldn't retrieve — repeatedly blocking
+`mode=agent` smoke tests via `agent.kakeya.ai`. Key insight: the agent runtime is a plain module;
+the gateway is just a wrapper. Added `--plan-only` — runs LLM planning (brief→script→scene_plan) +
+the prompt director, writes `director_prompts.json`, and **exits before any video render**. So the
+owner validates Gemma + director on the head in minutes with **no GPU, no gateway, no key**:
+`python -m services.agent_runtime.run --prompt "…" --plan-only`. Refactored `run()` to compute all
+directed prompts up front (cleaner separation of director vs. generation). Offline test asserts
+plan-only emits 2 directed prompts and renders no clips.
+
+**LIVE validation on the head (real Gemma, no GPU/gateway/key).** Owner ran `--plan-only` against the
+`kakeya_grpc` runtime → exit 0. Log: `provider=kakeya_grpc model=kakeya-local fake_assets=False` →
+`planning brief…` (`brief: The Dawn Hunter`) → `planning script/scenes…` → `3 scenes` →
+`prompt-director: loaded provider guidance (8000 chars)` → 3× `scene i: directed prompt — <rich
+cinematic prompt>` → `director_prompts.json`. **Gap B core loop (Gemma planning + Layer-3 prompt
+director) is proven live.**
+
+**Schema-drift fix (`enhancement_cues.type`).** Gemma's 4-bit script stage emitted an out-of-enum
+`enhancement_cues.type="visual"`, failing the strict `script.schema.json` (enum: overlay/broll/diagram/
+stat_card/code_snippet/animation; sections `additionalProperties:false`). Hardened `plan_script`: the
+prompt now lists the exact enum + "keep sections minimal, no unknown fields", AND a defensive
+`_sanitize_script()` strips unknown section keys and drops out-of-enum/malformed cues before
+validation (prompt steering alone is fragile for a 4-bit model). Offline test reproduces the
+`type="visual"` drift and asserts the sanitized script passes the schema. `5 passed`. (Folds the
+owner's local plan_script patch into the repo so head==repo, no divergence.)
+
+---
+
+## Iteration 44 — new Blackwell vast node + BrokenPipe root-cause (held-SSH) → tmux mode
+
+Wired a new vast box (RTX PRO 6000 **Blackwell**, 96 GB) as the 3rd node and chased an
+`INTERNAL: BrokenPipeError` that killed real jobs.
+
+- **Onboard:** authorized the head key (fixed a recurring *merged authorized_keys line* — the existing
+  key lacked a trailing newline, so an appended key concatenated and broke both), repointed
+  `~/.kakeya/vast.env`, verified Blackwell torch (2.12.1+cu130, sm_120 matmul OK), deps preinstalled.
+- **BrokenPipe root cause:** the **held-worker** mode runs the worker as a child of a persistent SSH
+  with stdout/stderr piped over that SSH. Diffusion writes progress bars to stderr; the fragile SSH
+  channel got `Connection reset by peer`, so the worker's write raised `BrokenPipeError` (surfaced as
+  the op error) AND the reset killed the worker mid-op (no Python traceback → killed by signal). The
+  heavy stderr traffic likely *caused* the resets. Verified the op itself is fine: framework AND v2v
+  refine run to completion **directly on the box** (`REFINE_OK`, ~6 s).
+- **Fix:** this box's image (unlike the earlier one) **keeps tmux/processes alive after SSH logout**
+  (tested). So switched it to non-held **tmux** mode (`VAST_HOLD_WORKER=0`): the worker is detached
+  from SSH, output goes to a tmux pane/file, and SSH resets no longer kill it. Verified: the worker
+  now survives and the 720p refine runs to 14/14 on the worker (previously it was killed → BrokenPipe).
+  Draft `mode=video` jobs complete end-to-end over the public gateway. Held-mode path was also
+  hardened (--preload, worker output → file, HF/tqdm bars off) for boxes that need it.
+- **Remaining (separate) issue:** for `quality=high` (full-frame 720p single-refine) the worker
+  computes the result but the gRPC progress/result **stream wedges over the SSH `-L` tunnel after
+  ~8 messages** — a transport flow-control deadlock, NOT the original crash. Needs a tunnel/transport
+  fix (gRPC window/keepalive tuning on the orchestrator channel, chunked result, or a sturdier
+  forward). Draft works; standard (tiled) likely avoids the single large stream.
+
+---
+
+## Iteration 45 — "tunnel stall" was a v2v-in-worker-thread hang → all tiers use native T2V DIRECT
+
+Chased the `quality=high` wedge (job stuck at refine 58%). It was **not** the tunnel:
+
+- The progress reaching 58% is expected (14 effective steps / 24 `total` for strength 0.6). The
+  **final result never arrives** because the worker is stuck **after** the denoise loop.
+- Bisected it: `framework`/native-T2V at **1280x720** completes in the worker (final 1 MB mp4 sent
+  over the tunnel OK, public download = h264 1280x720); **standalone v2v** at 512x288 completes in a
+  plain process; but the **`refine` (v2v) op hangs in the worker's gRPC servicer thread** after
+  denoise (VAE decode/return never completes, GPU 0%) — at 720p AND at the capped 512x288. So it is a
+  v2v-op × gRPC-thread interaction, independent of resolution and of the SSH tunnel. VAE
+  tiling/slicing (added) did not help.
+- **Fix:** drop v2v from the default tiers and use the **reliable native-T2V DIRECT** path on the
+  strongest worker (the Blackwell CUDA box) for all tiers — which also matches ADR 0015's finding
+  that native T2V beats a low-res seed + I2V/refine. Presets: draft 384x224, **standard 832x480**,
+  **high 1280x720**, all `refine_mode=direct`, 25 frames (4n+1) + interpolation.
+- **Verified end-to-end via `agent.kakeya.ai`** (public download + ffprobe): standard = h264
+  832x480x25; high = h264 1280x720, 47 frames (~2 s). Draft also fine.
+- Left in place as defense/diagnostics: `REFINE_MAX_DIM` cap on the single-refine path, VAE
+  tiling on the CUDA backend, and worker op-error tracebacks + final-message logging.
+
+**Open:** the v2v generative refine (extra detail over native T2V) remains disabled pending a
+root-cause of the in-thread VAE-decode hang (suspect CUDA × gRPC C-core threading; py-spy blocked by
+no SYS_PTRACE in the vast container). Native-T2V direct is the reliable quality path meanwhile.
+
+---
+
+## Iteration 46 — Hunyuan 720p routing wired; blocked by the same in-worker-thread decode hang
+
+Tried to make `high` = HunyuanVideo (13B) native 720p (ADR 0017 premium layer). Built the routing
+and confirmed the blocker is the worker concurrency model, not Hunyuan:
+
+- **Wired end-to-end:** orchestrator `--prefer-backend <substr>` (pin the generator to a backend,
+  e.g. `hunyuan`; falls back to fastest) + gateway `prefer_backend` param + `high` preset. Downloaded
+  the 40 GB model on the Blackwell, ran a dedicated `--backend hunyuan` worker on :50053 (no offload),
+  tunneled it to the head, added it to the worker list. A public `high` job correctly routed:
+  `DIRECT on 127.0.0.1:50054 (hunyuan-diffusers) @ 1280x720x45`, and Hunyuan **generated all 30
+  steps** at 100% GPU (~14 s/step) — generation works.
+- **Blocker:** after denoise, the worker **hangs at GPU 0%** in the Hunyuan VAE decode — the
+  *identical* post-denoise stall as WAN v2v (iter 45). Standalone Hunyuan (the iter-42 A/B) AND
+  standalone WAN v2v both complete; they only hang when the **heavy CUDA decode runs inside the gRPC
+  servicer's daemon thread** (`_stream`'s `threading.Thread`). WAN native-T2V's tiny VAE is the only
+  heavy decode that slips through — which is why all reliable tiers use it. (Can't py-spy: vast
+  container lacks SYS_PTRACE.)
+- **Decision:** reverted `high` to reliable **WAN native 720p** (verified: public h264 1280x720).
+  The `--prefer-backend=hunyuan` routing is wired and one line away from flipping on. **Real fix:
+  run the heavy generation op OFF the daemon thread** — a CUDA subprocess worker (spawn) or a
+  main-thread work-queue in the gРПС worker — so the decode doesn't deadlock with the gRPC C-core
+  threads. That worker-concurrency change is the next focused task to unlock Hunyuan (and v2v).
+
+---
+
+## Iteration 47 — subprocess worker fixes the decode hang; Hunyuan 720p LIVE as the `high` tier
+
+Implemented the worker-concurrency fix and shipped Hunyuan as the premium tier.
+
+- **`SubprocBackend` (`--subproc`):** runs the real backend in a persistent **spawned child process**
+  whose MAIN thread does all CUDA work (load + denoise + the heavy VAE decode). The gRPC servicer
+  thread only does IPC: it streams per-step progress back over a `Queue` and receives the result
+  frames via a temp `.npy` handoff — **no CUDA on the gRPC threads**, so the post-denoise decode no
+  longer hangs. (Root finding: the decode also *eventually* completes non-subproc but unreliably/very
+  slowly with GPU idle; the child-main-thread path is the robust fix.)
+- **Hunyuan 720p productized:** `high` → `prefer_backend=hunyuan` (native 1280x720, 30 steps, 45
+  frames; WAN-native fallback via `_pick_fw` if no hunyuan worker). The supervisor (`VAST_HUNYUAN=1`)
+  launches the `--backend hunyuan --subproc` worker in tmux on the box, maintains a 2nd tunnel
+  (`VAST_HUNYUAN_LOCAL`→`REMOTE`), and appends it to the dynamic worker list — durable + auto-recover.
+- **Verified end-to-end on `agent.kakeya.ai`** (public download + ffprobe): a plain `{"quality":"high"}`
+  job routed to `hunyuan-subproc @ 1280x720x45` and produced **h264 1280x720, 45 frames** (also an
+  explicit-param run). Generation ~30×14 s + decode; the worker no longer wedges.
+- Model (40 GB `hunyuanvideo-community/HunyuanVideo`) cached on the box; HUNYUAN_OFFLOAD=0 (Blackwell
+  96 GB). Tiers: draft 384x224 / standard 832x480 (WAN native) / **high 1280x720 (Hunyuan native)**.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto

@@ -138,6 +138,18 @@ def _png_bytes(frame):
     buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG"); return buf.getvalue()
 
 
+def _pick_fw(workers, prefer=""):
+    """Fastest framework/generator worker, optionally pinned to a backend substring (e.g. 'hunyuan').
+
+    Lets the gateway route a tier (e.g. 'high') to a specific model worker — Hunyuan for premium
+    quality — while other tiers fall through to the fastest available (WAN). No match -> fastest."""
+    if prefer:
+        m = [w for w in workers if prefer.lower() in (getattr(w, "backend", "") or "").lower()]
+        if m:
+            return max(m, key=lambda w: w.speed)
+    return max(workers, key=lambda w: w.speed)
+
+
 def _stitch(clips, overlap):
     """Concatenate chunks with an `overlap`-frame crossfade so chunk boundaries don't jump-cut.
 
@@ -198,6 +210,9 @@ def main():
     ap.add_argument("--proposer-steps", type=int, default=6)
     ap.add_argument("--refine-steps", type=int, default=16)
     ap.add_argument("--strength", type=float, default=0.6)
+    ap.add_argument("--prefer-backend", default=os.environ.get("PREFER_BACKEND", ""),
+                    help="prefer a framework/generator worker whose backend contains this substring "
+                         "(e.g. 'hunyuan'); falls back to the fastest worker if none match.")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--no-refine", action="store_true",
                     help="single-worker DIRECT T2V (e.g. Mac-only): one generation at fw dims, "
@@ -306,7 +321,7 @@ def main():
     # This is the Mac-only / single-GPU path (mlx-video has no vid2vid). Auto-enabled when no
     # refine worker is present, so the service still produces video with just the Mac.
     if args.no_refine or args.refine_mode == "direct" or not refine_workers:
-        fw = max(fw_workers, key=lambda w: w.speed)
+        fw = _pick_fw(fw_workers, args.prefer_backend)
         nf = args.fw_frames
         print(f"[orch] DIRECT (no-refine) on {fw.addr} ({fw.backend}) "
               f"@ {args.fw_width}x{args.fw_height}x{nf}", flush=True)
@@ -346,14 +361,24 @@ def main():
         F = framework.shape[0]
         t_idx = (np.round(np.linspace(0, F - 1, args.frames)).astype(int)
                  if F != args.frames else np.arange(args.frames))
-        # Upscale the proposer to the TARGET resolution before refine. The CUDA V2V pipeline keeps
-        # its INPUT resolution, so to get high-res generative detail the input must already be at
-        # out_w x out_h (MLX SR also honors this). This is what makes 'high'/single truly hi-res.
+        # Refine at a CAPPED resolution, then SR-upscale to the display target below. Full-frame
+        # v2v at 1280x720 makes the Wan VAE encode/decode allocate a huge fp32 tensor and HANG
+        # (denoise completes, then the worker is stuck at GPU 0% and never returns). Refining at
+        # <=REFINE_MAX_DIM (longest side; 512 is proven stable/fast ~6s) then LANCZOS-upscaling is
+        # reliable and still applies generative detail. Raise REFINE_MAX_DIM on stacks that handle
+        # higher; 0 disables the cap (original full-res behavior).
+        rw, rh = args.out_width, args.out_height
+        cap = int(os.environ.get("REFINE_MAX_DIM", "512"))
+        if cap and max(rw, rh) > cap:
+            s = cap / float(max(rw, rh))
+            rw = max(16, int(round(rw * s)) // 16 * 16)
+            rh = max(16, int(round(rh * s)) // 16 * 16)
         proposer = np.stack([np.asarray(Image.fromarray(framework[t_idx[i]]).resize(
-            (args.out_width, args.out_height), Image.BICUBIC)) for i in range(args.frames)])
+            (rw, rh), Image.BICUBIC)) for i in range(args.frames)])
+        print(f"[orch] refine @ {rw}x{rh} (cap={cap}) -> upscale to {args.out_width}x{args.out_height}", flush=True)
         mp4b, rg = _consume(refiner.stub.RefineTile(pb.RefineRequest(
             prompt=args.prompt, mp4=_frames_to_mp4_bytes(proposer),
-            width=args.out_width, height=args.out_height, num_frames=args.frames,
+            width=rw, height=rh, num_frames=args.frames,
             steps=args.refine_steps, strength=args.strength, seed=args.seed + 10)), "refine")
         final = _mp4_to_frames(mp4b)
         # Generative refiners (WAN 1.3B V2V) output at the model's NATIVE resolution (~832x480)

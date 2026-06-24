@@ -87,9 +87,18 @@ once() {
     if ! pgrep -f "KAKEYA_HELD=$VAST_SSH_HOST" >/dev/null 2>&1; then
       pkill -f "KAKEYA_HELD=" 2>/dev/null   # clean stale holds (e.g. old host)
       OPS="framework,refine,i2v"; [ -z "${VAST_I2V_MODEL:-}" ] && OPS="framework,refine"
+      # Two hardening fixes for INTERNAL BrokenPipe on real jobs:
+      #  1) --preload: load the T2V model at BOOT (server binds only after), so the first RPC is
+      #     instant instead of triggering a ~30s cold load mid-RPC.
+      #  2) Redirect the worker's stdout/stderr to a FILE ON THE BOX (not through the held-SSH pipe).
+      #     The diffusion writes progress bars to stderr; sending that over the SSH channel both
+      #     (a) raised BrokenPipeError inside the op when the channel hiccuped, and (b) the heavy
+      #     traffic itself triggered "Connection reset by peer" that killed the worker mid-job.
+      #     With output on a local file the held SSH carries ~no data and just keeps the process alive.
+      #     HF/tqdm bars are also disabled as defense in depth. Read the worker log at $VAST_WORKER_LOG.
       nohup ssh $SSH_OPTS -o ServerAliveInterval=20 -o ServerAliveCountMax=1000 \
           -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
-          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS" \
+          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS --preload > ${VAST_WORKER_LOG:-/workspace/distwan/worker.log} 2>&1" \
           >> "$HOME/.openmontage-logs/vast_held_worker.log" 2>&1 &
       log "spawned held worker ssh -> $VAST_SSH_HOST (ops=$OPS); model load may take minutes"
       sleep 3
@@ -114,10 +123,29 @@ once() {
     sleep 2
   fi
 
+  # Optional Hunyuan premium worker (subproc) for the 'high' tier (ADR 0017). Runs as a SECOND tmux
+  # worker on the same box (port VAST_HUNYUAN_REMOTE), tunneled to VAST_HUNYUAN_LOCAL on the head, and
+  # appended to the worker list so the gateway's --prefer-backend=hunyuan routing can reach it.
+  HY=""
+  if [ "${VAST_HUNYUAN:-0}" = "1" ]; then
+    HR="${VAST_HUNYUAN_REMOTE:-50053}"; HL="${VAST_HUNYUAN_LOCAL:-50054}"
+    ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+      "tmux has-session -t hunyuan 2>/dev/null || tmux new-session -d -s hunyuan \"cd /workspace/distwan && HF_HOME=${VAST_HF_HOME:-/root/.hf_home} HUNYUAN_OFFLOAD=${VAST_HUNYUAN_OFFLOAD:-0} DISTWAN_TMP=/workspace HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend hunyuan --subproc --ops framework --host 0.0.0.0 --port $HR > /workspace/distwan/hunyuan_sp.log 2>&1\"" 2>/dev/null
+    if ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+         "bash -c 'exec 3<>/dev/tcp/127.0.0.1/$HR' 2>/dev/null && echo up" 2>/dev/null | grep -q up; then
+      nc -z 127.0.0.1 "$HL" >/dev/null 2>&1 || {
+        pkill -f "L $HL:localhost:$HR" 2>/dev/null; sleep 1
+        ssh $SSH_OPTS -o ExitOnForwardFailure=yes -fN -L "$HL:localhost:$HR" \
+            -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" 2>/dev/null; sleep 2; }
+      nc -z 127.0.0.1 "$HL" >/dev/null 2>&1 && HY=",127.0.0.1:$HL"
+    fi
+  fi
+
   if reachable_local; then
-    write_workers "$BASE_WORKERS,127.0.0.1:$VAST_LOCAL_PORT"; log "vast refiner ONLINE -> 3-node (added 127.0.0.1:$VAST_LOCAL_PORT)"
+    write_workers "$BASE_WORKERS,127.0.0.1:$VAST_LOCAL_PORT$HY"
+    log "vast refiner ONLINE -> $BASE_WORKERS,127.0.0.1:$VAST_LOCAL_PORT$HY"
   else
-    write_workers "$BASE_WORKERS"; log "tunnel failed -> 2-Mac fallback"
+    write_workers "$BASE_WORKERS$HY"; log "wan tunnel failed -> $BASE_WORKERS$HY"
   fi
 }
 

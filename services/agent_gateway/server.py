@@ -157,12 +157,21 @@ QUALITY_PRESETS: dict[str, dict] = {
     "draft": {"fw_width": 384, "fw_height": 224, "fw_frames": 13, "proposer_steps": 5,
               "refine_steps": 12, "out_width": 640, "out_height": 384, "frames": 25,
               "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
-    "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
+    # standard = native T2V @ 832x480 DIRECT (same reliable path as 'high'; the tiled v2v refine
+    # hangs in the worker thread, so all tiers use direct native generation, differing by res/frames).
+    "standard": {"fw_width": 832, "fw_height": 480, "fw_frames": 25, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
-                 "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
-    "high": {"fw_width": 512, "fw_height": 288, "fw_frames": 17, "proposer_steps": 8,
-             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
-             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "single"},
+                 "fps": 16, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
+    # 'high' = HunyuanVideo (13B) NATIVE 1280x720 — the premium quality layer (ADR 0017), routed via
+    # prefer_backend='hunyuan' to the subprocess Hunyuan worker (--backend hunyuan --subproc, which
+    # runs the heavy VAE decode off the gRPC threads — fixes the in-worker-thread hang). Hunyuan is
+    # not distilled, so ~30 steps; 45 frames (4n+1) native, no interpolation. If no hunyuan worker is
+    # up, _pick_fw falls back to the fastest worker = WAN native 1280x720 (still reliable). Verified
+    # end-to-end on agent.kakeya.ai: public h264 1280x720x45.
+    "high": {"fw_width": 1280, "fw_height": 720, "fw_frames": 45, "proposer_steps": 30,
+             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 45,
+             "fps": 24, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct",
+             "prefer_backend": "hunyuan"},
 }
 
 
@@ -185,6 +194,7 @@ class VideoRequest(BaseModel):
     out_width: Optional[int] = None
     out_height: Optional[int] = None
     refine_mode: Optional[str] = Field(None, pattern="^(auto|direct|single|tiled)$")
+    prefer_backend: Optional[str] = Field(None, pattern="^[a-z0-9_-]{0,24}$")
     # Long-form (ADR 0015 Phase 2): chunks>1 (or longform=true + seconds) = autoregressive I2V gen.
     longform: bool = False
     chunks: Optional[int] = Field(None, ge=1, le=20)
@@ -213,6 +223,8 @@ class VideoRequest(BaseModel):
                 p["chunks"] = max(1, math.ceil((want - p["chunk_overlap"]) / net))
         if p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds drives frame count
             p["frames"] = max(2, round(p["seconds"] * p["fps"]))
+        if self.prefer_backend is not None:
+            p["prefer_backend"] = self.prefer_backend
         p["quality"] = self.quality
         return p
 
@@ -252,6 +264,8 @@ def _run_video_job(job: Job):
         cmd += ["--seconds", str(p["seconds"])]
     if p.get("refine_mode"):  # quality preset / explicit override of refine topology
         cmd += ["--refine-mode", p["refine_mode"]]
+    if p.get("prefer_backend"):  # pin a tier to a model worker (e.g. 'high' -> hunyuan)
+        cmd += ["--prefer-backend", p["prefer_backend"]]
     if p.get("chunks", 1) > 1:  # long-form (autoregressive I2V continuity)
         cmd += ["--chunks", str(p["chunks"]), "--chunk-frames", str(p["chunk_frames"]),
                 "--chunk-overlap", str(p["chunk_overlap"])]
@@ -412,15 +426,42 @@ pre{white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:auto;ba
   border:1px solid #1c2942;border-radius:10px;padding:12px;font-size:12.5px;color:#a9c2e6}
 video{width:100%;border-radius:12px;margin-top:12px;background:#000}
 input[type=password]{padding:10px;border-radius:8px;border:1px solid #2a3a59;background:#0e1830;color:#e7eefc}
+select{padding:9px 10px;border-radius:8px;border:1px solid #2a3a59;background:#0e1830;color:#e7eefc;font:inherit}
+label.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#8fa6c8}
+label.fld select:disabled{opacity:.45}
 </style></head><body><div class="wrap">
 <h1>OpenMontage — Agent Video</h1>
 <p class="sub">Describe a clip. The distributed cluster (MLX proposer + CUDA refiner) renders it.</p>
 <textarea id="p" placeholder="a red fox walking through a snowy forest, cinematic, soft winter light"></textarea>
 <div class="row">
-  <button id="go">Generate</button>
-  <input id="key" type="password" placeholder="API key (if required)" style="flex:1;min-width:160px">
+  <label class="fld">Mode
+    <select id="mode">
+      <option value="video">video · direct (fast)</option>
+      <option value="agent">agent · full pipeline</option>
+    </select>
+  </label>
+  <label class="fld">Quality
+    <select id="quality">
+      <option value="draft">draft · 640×384</option>
+      <option value="standard" selected>standard · 832×480</option>
+      <option value="high">high · 1280×720</option>
+    </select>
+  </label>
+  <label class="fld">Length
+    <select id="len">
+      <option value="">auto</option>
+      <option value="3">3s</option>
+      <option value="5">5s</option>
+      <option value="8">8s</option>
+      <option value="10">10s</option>
+    </select>
+  </label>
 </div>
-<p class="muted">Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.</p>
+<div class="row">
+  <button id="go">Generate</button>
+  <input id="key" type="password" placeholder="API key (remembered in this browser)" style="flex:1;min-width:160px">
+</div>
+<p class="muted" id="hint">Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.</p>
 <div class="card" id="status" style="display:none">
   <div id="stage" class="muted">queued…</div>
   <div class="bar"><i id="fill"></i></div>
@@ -430,6 +471,17 @@ input[type=password]{padding:10px;border-radius:8px;border:1px solid #2a3a59;bac
 <script>
 const $=id=>document.getElementById(id);
 let timer=null;
+// Remember the API key in this browser so it only has to be entered once.
+try{const sk=localStorage.getItem('om_api_key');if(sk)$('key').value=sk;}catch(e){}
+function syncMode(){
+  const agent=$('mode').value==='agent';
+  // quality/length apply to direct video; agent mode plans its own scenes, pacing and length.
+  $('quality').disabled=agent; $('len').disabled=agent;
+  $('hint').innerHTML=agent
+    ? 'Agent mode: the LLM plans script → scenes → directed prompts, the cluster renders each, then composes one video. Quality/Length below apply to <em>direct video</em> mode only. This takes several minutes.'
+    : 'Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.';
+}
+$('mode').onchange=syncMode; syncMode();
 async function poll(jid){
   const r=await fetch('/v1/jobs/'+jid); const j=await r.json();
   $('stage').textContent=j.status+' · '+j.stage+' · '+Math.round((j.pct||0)*100)+'%';
@@ -444,8 +496,11 @@ $('go').onclick=async()=>{
   const prompt=$('p').value.trim(); if(prompt.length<3)return;
   $('go').disabled=true;$('status').style.display='block';$('vid').style.display='none';
   $('stage').textContent='submitting…';$('fill').style.width='0';$('log').textContent='';
-  const h={'Content-Type':'application/json'}; const k=$('key').value.trim(); if(k)h['X-API-Key']=k;
-  const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify({prompt})});
+  const h={'Content-Type':'application/json'}; const k=$('key').value.trim();
+  if(k){h['X-API-Key']=k; try{localStorage.setItem('om_api_key',k);}catch(e){}}
+  const mode=$('mode').value; const body={prompt,mode};
+  if(mode==='video'){ body.quality=$('quality').value; const s=$('len').value; if(s)body.seconds=parseFloat(s); }
+  const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify(body)});
   if(!r.ok){$('go').disabled=false;$('stage').textContent='error: '+r.status+' '+(await r.text());return;}
   const {job_id}=await r.json();
   timer=setInterval(()=>poll(job_id),2500);poll(job_id);
