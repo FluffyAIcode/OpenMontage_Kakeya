@@ -101,6 +101,15 @@ class CudaBackend:
         self.pipe = WanPipeline.from_pretrained(self.MODEL, vae=vae, torch_dtype=torch.bfloat16)
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config, flow_shift=3.0)
         self.pipe.to("cuda")
+        # VAE tiling/slicing: REQUIRED for the 720p refine path. The Wan VAE encode+decode of a
+        # full-frame 1280x720 clip in fp32 otherwise allocates a huge contiguous tensor and HANGS
+        # (observed: refine denoise completes, then the worker is stuck in VAE decode at GPU 0%).
+        # Tiling processes the frame in spatial tiles; slicing splits the temporal batch.
+        for _vae in (vae,):
+            try:
+                _vae.enable_tiling(); _vae.enable_slicing()
+            except Exception:  # noqa: BLE001
+                pass
         self.pipe.load_lora_weights(self.LORA_REPO, weight_name=self.LORA_FILE, adapter_name="causvid")
         self.v2v = WanVideoToVideoPipeline(**{k: self.pipe.components[k] for k in
                                               ("tokenizer", "text_encoder", "transformer", "vae", "scheduler")})
@@ -120,6 +129,10 @@ class CudaBackend:
         pipe = WanImageToVideoPipeline.from_pretrained(self.i2v_model, vae=vae, image_encoder=image_encoder,
                                                        torch_dtype=torch.bfloat16)
         pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=5.0)
+        try:  # tiling/slicing keeps 720P I2V VAE encode/decode within memory (see load())
+            vae.enable_tiling(); vae.enable_slicing()
+        except Exception:  # noqa: BLE001
+            pass
         if os.environ.get("CUDA_I2V_OFFLOAD", "0").lower() in ("1", "true", "yes"):
             pipe.enable_model_cpu_offload()
         else:
