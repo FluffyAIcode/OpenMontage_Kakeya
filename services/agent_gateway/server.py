@@ -412,15 +412,42 @@ pre{white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:auto;ba
   border:1px solid #1c2942;border-radius:10px;padding:12px;font-size:12.5px;color:#a9c2e6}
 video{width:100%;border-radius:12px;margin-top:12px;background:#000}
 input[type=password]{padding:10px;border-radius:8px;border:1px solid #2a3a59;background:#0e1830;color:#e7eefc}
+select{padding:9px 10px;border-radius:8px;border:1px solid #2a3a59;background:#0e1830;color:#e7eefc;font:inherit}
+label.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#8fa6c8}
+label.fld select:disabled{opacity:.45}
 </style></head><body><div class="wrap">
 <h1>OpenMontage — Agent Video</h1>
 <p class="sub">Describe a clip. The distributed cluster (MLX proposer + CUDA refiner) renders it.</p>
 <textarea id="p" placeholder="a red fox walking through a snowy forest, cinematic, soft winter light"></textarea>
 <div class="row">
-  <button id="go">Generate</button>
-  <input id="key" type="password" placeholder="API key (if required)" style="flex:1;min-width:160px">
+  <label class="fld">Mode
+    <select id="mode">
+      <option value="video">video · direct (fast)</option>
+      <option value="agent">agent · full pipeline</option>
+    </select>
+  </label>
+  <label class="fld">Quality
+    <select id="quality">
+      <option value="draft">draft · 640×384</option>
+      <option value="standard" selected>standard · 832×480</option>
+      <option value="high">high · 1280×720</option>
+    </select>
+  </label>
+  <label class="fld">Length
+    <select id="len">
+      <option value="">auto</option>
+      <option value="3">3s</option>
+      <option value="5">5s</option>
+      <option value="8">8s</option>
+      <option value="10">10s</option>
+    </select>
+  </label>
 </div>
-<p class="muted">Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.</p>
+<div class="row">
+  <button id="go">Generate</button>
+  <input id="key" type="password" placeholder="API key (remembered in this browser)" style="flex:1;min-width:160px">
+</div>
+<p class="muted" id="hint">Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.</p>
 <div class="card" id="status" style="display:none">
   <div id="stage" class="muted">queued…</div>
   <div class="bar"><i id="fill"></i></div>
@@ -432,6 +459,15 @@ const $=id=>document.getElementById(id);
 let timer=null;
 // Remember the API key in this browser so it only has to be entered once.
 try{const sk=localStorage.getItem('om_api_key');if(sk)$('key').value=sk;}catch(e){}
+function syncMode(){
+  const agent=$('mode').value==='agent';
+  // quality/length apply to direct video; agent mode plans its own scenes, pacing and length.
+  $('quality').disabled=agent; $('len').disabled=agent;
+  $('hint').innerHTML=agent
+    ? 'Agent mode: the LLM plans script → scenes → directed prompts, the cluster renders each, then composes one video. Quality/Length below apply to <em>direct video</em> mode only. This takes several minutes.'
+    : 'Direct text→video via <code>/v1/videos</code>. First render can take a few minutes.';
+}
+$('mode').onchange=syncMode; syncMode();
 async function poll(jid){
   const r=await fetch('/v1/jobs/'+jid); const j=await r.json();
   $('stage').textContent=j.status+' · '+j.stage+' · '+Math.round((j.pct||0)*100)+'%';
@@ -448,7 +484,9 @@ $('go').onclick=async()=>{
   $('stage').textContent='submitting…';$('fill').style.width='0';$('log').textContent='';
   const h={'Content-Type':'application/json'}; const k=$('key').value.trim();
   if(k){h['X-API-Key']=k; try{localStorage.setItem('om_api_key',k);}catch(e){}}
-  const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify({prompt})});
+  const mode=$('mode').value; const body={prompt,mode};
+  if(mode==='video'){ body.quality=$('quality').value; const s=$('len').value; if(s)body.seconds=parseFloat(s); }
+  const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify(body)});
   if(!r.ok){$('go').disabled=false;$('stage').textContent='error: '+r.status+' '+(await r.text());return;}
   const {job_id}=await r.json();
   timer=setInterval(()=>poll(job_id),2500);poll(job_id);
