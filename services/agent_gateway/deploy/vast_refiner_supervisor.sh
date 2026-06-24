@@ -87,13 +87,18 @@ once() {
     if ! pgrep -f "KAKEYA_HELD=$VAST_SSH_HOST" >/dev/null 2>&1; then
       pkill -f "KAKEYA_HELD=" 2>/dev/null   # clean stale holds (e.g. old host)
       OPS="framework,refine,i2v"; [ -z "${VAST_I2V_MODEL:-}" ] && OPS="framework,refine"
-      # --preload: load the T2V model at worker BOOT (server binds only after load), so the first
-      # framework/refine RPC is instant. Without it the first call triggers a ~30s cold download/load
-      # over the held-SSH pipe, which has caused INTERNAL BrokenPipe on the very first job. HF/tqdm
-      # progress bars are silenced (HF_HUB_DISABLE_PROGRESS_BARS) to avoid flooding the SSH stderr pipe.
+      # Two hardening fixes for INTERNAL BrokenPipe on real jobs:
+      #  1) --preload: load the T2V model at BOOT (server binds only after), so the first RPC is
+      #     instant instead of triggering a ~30s cold load mid-RPC.
+      #  2) Redirect the worker's stdout/stderr to a FILE ON THE BOX (not through the held-SSH pipe).
+      #     The diffusion writes progress bars to stderr; sending that over the SSH channel both
+      #     (a) raised BrokenPipeError inside the op when the channel hiccuped, and (b) the heavy
+      #     traffic itself triggered "Connection reset by peer" that killed the worker mid-job.
+      #     With output on a local file the held SSH carries ~no data and just keeps the process alive.
+      #     HF/tqdm bars are also disabled as defense in depth. Read the worker log at $VAST_WORKER_LOG.
       nohup ssh $SSH_OPTS -o ServerAliveInterval=20 -o ServerAliveCountMax=1000 \
           -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
-          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS --preload" \
+          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS --preload > ${VAST_WORKER_LOG:-/workspace/distwan/worker.log} 2>&1" \
           >> "$HOME/.openmontage-logs/vast_held_worker.log" 2>&1 &
       log "spawned held worker ssh -> $VAST_SSH_HOST (ops=$OPS); model load may take minutes"
       sleep 3
