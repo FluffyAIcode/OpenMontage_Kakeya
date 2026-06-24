@@ -1317,6 +1317,28 @@ and confirmed the blocker is the worker concurrency model, not Hunyuan:
 
 ---
 
+## Iteration 47 — subprocess worker fixes the decode hang; Hunyuan 720p LIVE as the `high` tier
+
+Implemented the worker-concurrency fix and shipped Hunyuan as the premium tier.
+
+- **`SubprocBackend` (`--subproc`):** runs the real backend in a persistent **spawned child process**
+  whose MAIN thread does all CUDA work (load + denoise + the heavy VAE decode). The gRPC servicer
+  thread only does IPC: it streams per-step progress back over a `Queue` and receives the result
+  frames via a temp `.npy` handoff — **no CUDA on the gRPC threads**, so the post-denoise decode no
+  longer hangs. (Root finding: the decode also *eventually* completes non-subproc but unreliably/very
+  slowly with GPU idle; the child-main-thread path is the robust fix.)
+- **Hunyuan 720p productized:** `high` → `prefer_backend=hunyuan` (native 1280x720, 30 steps, 45
+  frames; WAN-native fallback via `_pick_fw` if no hunyuan worker). The supervisor (`VAST_HUNYUAN=1`)
+  launches the `--backend hunyuan --subproc` worker in tmux on the box, maintains a 2nd tunnel
+  (`VAST_HUNYUAN_LOCAL`→`REMOTE`), and appends it to the dynamic worker list — durable + auto-recover.
+- **Verified end-to-end on `agent.kakeya.ai`** (public download + ffprobe): a plain `{"quality":"high"}`
+  job routed to `hunyuan-subproc @ 1280x720x45` and produced **h264 1280x720, 45 frames** (also an
+  explicit-param run). Generation ~30×14 s + decode; the worker no longer wedges.
+- Model (40 GB `hunyuanvideo-community/HunyuanVideo`) cached on the box; HUNYUAN_OFFLOAD=0 (Blackwell
+  96 GB). Tiers: draft 384x224 / standard 832x480 (WAN native) / **high 1280x720 (Hunyuan native)**.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
