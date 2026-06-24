@@ -430,6 +430,8 @@ input[type=password]{padding:10px;border-radius:8px;border:1px solid #2a3a59;bac
 <script>
 const $=id=>document.getElementById(id);
 let timer=null;
+// Remember the API key in this browser so it only has to be entered once.
+try{const sk=localStorage.getItem('om_api_key');if(sk)$('key').value=sk;}catch(e){}
 async function poll(jid){
   const r=await fetch('/v1/jobs/'+jid); const j=await r.json();
   $('stage').textContent=j.status+' · '+j.stage+' · '+Math.round((j.pct||0)*100)+'%';
@@ -444,7 +446,8 @@ $('go').onclick=async()=>{
   const prompt=$('p').value.trim(); if(prompt.length<3)return;
   $('go').disabled=true;$('status').style.display='block';$('vid').style.display='none';
   $('stage').textContent='submitting…';$('fill').style.width='0';$('log').textContent='';
-  const h={'Content-Type':'application/json'}; const k=$('key').value.trim(); if(k)h['X-API-Key']=k;
+  const h={'Content-Type':'application/json'}; const k=$('key').value.trim();
+  if(k){h['X-API-Key']=k; try{localStorage.setItem('om_api_key',k);}catch(e){}}
   const r=await fetch('/v1/videos',{method:'POST',headers:h,body:JSON.stringify({prompt})});
   if(!r.ok){$('go').disabled=false;$('stage').textContent='error: '+r.status+' '+(await r.text());return;}
   const {job_id}=await r.json();
