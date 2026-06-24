@@ -1292,6 +1292,31 @@ no SYS_PTRACE in the vast container). Native-T2V direct is the reliable quality 
 
 ---
 
+## Iteration 46 — Hunyuan 720p routing wired; blocked by the same in-worker-thread decode hang
+
+Tried to make `high` = HunyuanVideo (13B) native 720p (ADR 0017 premium layer). Built the routing
+and confirmed the blocker is the worker concurrency model, not Hunyuan:
+
+- **Wired end-to-end:** orchestrator `--prefer-backend <substr>` (pin the generator to a backend,
+  e.g. `hunyuan`; falls back to fastest) + gateway `prefer_backend` param + `high` preset. Downloaded
+  the 40 GB model on the Blackwell, ran a dedicated `--backend hunyuan` worker on :50053 (no offload),
+  tunneled it to the head, added it to the worker list. A public `high` job correctly routed:
+  `DIRECT on 127.0.0.1:50054 (hunyuan-diffusers) @ 1280x720x45`, and Hunyuan **generated all 30
+  steps** at 100% GPU (~14 s/step) — generation works.
+- **Blocker:** after denoise, the worker **hangs at GPU 0%** in the Hunyuan VAE decode — the
+  *identical* post-denoise stall as WAN v2v (iter 45). Standalone Hunyuan (the iter-42 A/B) AND
+  standalone WAN v2v both complete; they only hang when the **heavy CUDA decode runs inside the gRPC
+  servicer's daemon thread** (`_stream`'s `threading.Thread`). WAN native-T2V's tiny VAE is the only
+  heavy decode that slips through — which is why all reliable tiers use it. (Can't py-spy: vast
+  container lacks SYS_PTRACE.)
+- **Decision:** reverted `high` to reliable **WAN native 720p** (verified: public h264 1280x720).
+  The `--prefer-backend=hunyuan` routing is wired and one line away from flipping on. **Real fix:
+  run the heavy generation op OFF the daemon thread** — a CUDA subprocess worker (spawn) or a
+  main-thread work-queue in the gРПС worker — so the decode doesn't deadlock with the gRPC C-core
+  threads. That worker-concurrency change is the next focused task to unlock Hunyuan (and v2v).
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
