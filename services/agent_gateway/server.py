@@ -160,9 +160,14 @@ QUALITY_PRESETS: dict[str, dict] = {
     "standard": {"fw_width": 480, "fw_height": 256, "fw_frames": 13, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
                  "fps": 12, "interpolate": 1, "interp_method": "linear", "refine_mode": ""},
-    "high": {"fw_width": 512, "fw_height": 288, "fw_frames": 17, "proposer_steps": 8,
+    # 'high' = NATIVE T2V generation at 1280x720 directly on the strongest framework worker (the
+    # CUDA box), no v2v refine. The distributed v2v refine op hangs in the worker's gRPC thread
+    # after denoise (VAE decode never returns; framework/native-T2V at 720p works fine in-thread),
+    # so the reliable hi-res path is direct native generation — which also matches the "native T2V
+    # beats low-res-seed + I2V/refine" finding (ADR 0015). 25 frames (4n+1) + mci interpolation.
+    "high": {"fw_width": 1280, "fw_height": 720, "fw_frames": 25, "proposer_steps": 8,
              "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
-             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "single"},
+             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "direct"},
 }
 
 
