@@ -483,7 +483,10 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
                 result["frames"] = op_fn(request, q)
                 result["t"] = time.time() - t
             except Exception as exc:  # noqa: BLE001
+                import traceback as _tb
                 result["err"] = f"{type(exc).__name__}: {exc}"
+                print(f"[grpc_worker] op error: {result['err']}", flush=True)
+                _tb.print_exc()
             finally:
                 q.put(("done", None))
 
