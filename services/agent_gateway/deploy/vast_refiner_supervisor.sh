@@ -87,9 +87,13 @@ once() {
     if ! pgrep -f "KAKEYA_HELD=$VAST_SSH_HOST" >/dev/null 2>&1; then
       pkill -f "KAKEYA_HELD=" 2>/dev/null   # clean stale holds (e.g. old host)
       OPS="framework,refine,i2v"; [ -z "${VAST_I2V_MODEL:-}" ] && OPS="framework,refine"
+      # --preload: load the T2V model at worker BOOT (server binds only after load), so the first
+      # framework/refine RPC is instant. Without it the first call triggers a ~30s cold download/load
+      # over the held-SSH pipe, which has caused INTERNAL BrokenPipe on the very first job. HF/tqdm
+      # progress bars are silenced (HF_HUB_DISABLE_PROGRESS_BARS) to avoid flooding the SSH stderr pipe.
       nohup ssh $SSH_OPTS -o ServerAliveInterval=20 -o ServerAliveCountMax=1000 \
           -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
-          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS" \
+          "cd /workspace/distwan && KAKEYA_HELD=$VAST_SSH_HOST HF_HOME=${VAST_HF_HOME:-/root/.hf_home} HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 CUDA_I2V_MODEL='${VAST_I2V_MODEL:-}' CUDA_I2V_OFFLOAD='${VAST_I2V_OFFLOAD:-0}' exec ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend cuda --host 0.0.0.0 --port $VAST_REMOTE_PORT --ops $OPS --preload" \
           >> "$HOME/.openmontage-logs/vast_held_worker.log" 2>&1 &
       log "spawned held worker ssh -> $VAST_SSH_HOST (ops=$OPS); model load may take minutes"
       sleep 3
