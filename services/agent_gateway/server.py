@@ -162,14 +162,15 @@ QUALITY_PRESETS: dict[str, dict] = {
     "standard": {"fw_width": 832, "fw_height": 480, "fw_frames": 25, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
                  "fps": 16, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
-    # 'high' = NATIVE 720p generation on the HunyuanVideo (13B) worker — the premium quality layer
-    # (ADR 0017). Routed via prefer_backend='hunyuan' (DIRECT generation; no v2v refine). Hunyuan is
-    # not distilled, so ~30 steps; 45 frames (4n+1) native. Falls back to the fastest worker (WAN) if
-    # no hunyuan worker is up. WAN native 1280x720 direct remains the fallback for high.
-    "high": {"fw_width": 1280, "fw_height": 720, "fw_frames": 45, "proposer_steps": 30,
-             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 45,
-             "fps": 24, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct",
-             "prefer_backend": "hunyuan"},
+    # 'high' = native WAN T2V @ 1280x720 DIRECT (reliable). Hunyuan (13B) would be断崖式 better, but
+    # its heavy VAE decode HANGS when run inside the worker's gRPC daemon thread (same stall as WAN
+    # v2v; standalone Hunyuan/v2v both work — only heavy decode in the servicer thread hangs). Until
+    # the worker runs the heavy op off the daemon thread (main thread / subprocess), high stays on the
+    # reliable WAN native path. The --prefer-backend='hunyuan' routing is wired and ready (ADR 0017);
+    # set prefer_backend below to flip to Hunyuan once the worker concurrency fix lands.
+    "high": {"fw_width": 1280, "fw_height": 720, "fw_frames": 25, "proposer_steps": 8,
+             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
+             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "direct"},
 }
 
 
