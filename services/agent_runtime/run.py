@@ -222,13 +222,45 @@ def plan_brief(llm: LLM, prompt: str) -> dict:
     return llm.complete_json(sys_p, f"User brief: {prompt}")
 
 
+# script.schema.json: sections are strict (additionalProperties:false) and enhancement_cues[].type
+# is an enum. A 4-bit local model (Gemma) drifts — e.g. it emitted type="visual" — so we both steer
+# the prompt AND defensively sanitize before validation so a stray field never fails the pipeline.
+_SCRIPT_SECTION_KEYS = {"id", "label", "text", "start_seconds", "end_seconds",
+                        "speaker_directions", "enhancement_cues", "pronunciation_guides", "source_ref"}
+_CUE_TYPES = {"overlay", "broll", "diagram", "stat_card", "code_snippet", "animation"}
+
+
+def _sanitize_script(script: dict) -> dict:
+    """Drop fields that would fail the strict script schema (LLM drift guard).
+
+    Keeps only known section keys and filters enhancement_cues to the allowed `type` enum (dropping
+    cues that are malformed or out-of-enum, e.g. the observed type="visual")."""
+    for sec in script.get("sections", []):
+        if not isinstance(sec, dict):
+            continue
+        for k in [k for k in sec if k not in _SCRIPT_SECTION_KEYS]:
+            sec.pop(k, None)
+        cues = sec.get("enhancement_cues")
+        if isinstance(cues, list):
+            kept = [c for c in cues if isinstance(c, dict) and c.get("type") in _CUE_TYPES
+                    and c.get("description")]
+            if kept:
+                sec["enhancement_cues"] = kept
+            else:
+                sec.pop("enhancement_cues", None)
+    return script
+
+
 def plan_script(llm: LLM, brief: dict) -> dict:
     dur = int(brief.get("target_duration_seconds", 20))
     sys_p = ("You are OpenMontage's script director. Output a `script` JSON artifact. Required: "
              "version='1.0', title, total_duration_seconds (integer), sections (array). Each section: "
-             "id, text, start_seconds, end_seconds (contiguous, covering 0..total). Keep it concise. "
+             "id, text, start_seconds, end_seconds (contiguous, covering 0..total). Keep sections "
+             "MINIMAL (only those fields). The schema is STRICT: do not add unknown fields. Omit "
+             "`enhancement_cues` unless needed; if present, each cue.type MUST be exactly one of "
+             "[overlay, broll, diagram, stat_card, code_snippet, animation] (NOT 'visual'). "
              + _skill("pipelines/explainer/script-director"))
-    return llm.complete_json(sys_p, f"Brief:\n{json.dumps(brief)}\nTotal duration ~{dur}s.")
+    return _sanitize_script(llm.complete_json(sys_p, f"Brief:\n{json.dumps(brief)}\nTotal duration ~{dur}s."))
 
 
 def plan_scenes(llm: LLM, script: dict) -> dict:

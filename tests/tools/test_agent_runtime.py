@@ -106,6 +106,29 @@ def test_llm_json_extraction():
     assert llm.complete_json("sys", "user") == {"a": 1, "b": {"c": 2}}
 
 
+def test_sanitize_script_drops_invalid_cues():
+    """Guard the observed Gemma drift: an out-of-enum enhancement_cues.type (e.g. 'visual') and
+    unknown section fields must be stripped so the strict script schema still validates."""
+    import services.agent_runtime.run as run_mod
+    from schemas.artifacts import validate_artifact
+    script = {
+        "version": "1.0", "title": "T", "total_duration_seconds": 10,
+        "sections": [
+            {"id": "s1", "text": "a", "start_seconds": 0, "end_seconds": 5, "bogus_field": 1,
+             "enhancement_cues": [{"type": "visual", "description": "bad"},
+                                  {"type": "broll", "description": "ok"}]},
+            {"id": "s2", "text": "b", "start_seconds": 5, "end_seconds": 10,
+             "enhancement_cues": [{"type": "nope", "description": "x"}]},
+        ],
+    }
+    out = run_mod._sanitize_script(script)
+    s1, s2 = out["sections"]
+    assert "bogus_field" not in s1
+    assert [c["type"] for c in s1["enhancement_cues"]] == ["broll"]  # 'visual' dropped
+    assert "enhancement_cues" not in s2  # all-invalid -> removed
+    validate_artifact("script", out)  # now passes the strict schema
+
+
 def test_kakeya_grpc_requires_repo(monkeypatch):
     """kakeya_grpc is an external-dependency contract: without KAKEYA_REPO it must fail with a
     clear, actionable error (not an obscure ImportError) and never become a core dep."""

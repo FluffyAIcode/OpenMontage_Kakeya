@@ -1217,7 +1217,23 @@ the prompt director, writes `director_prompts.json`, and **exits before any vide
 owner validates Gemma + director on the head in minutes with **no GPU, no gateway, no key**:
 `python -m services.agent_runtime.run --prompt "…" --plan-only`. Refactored `run()` to compute all
 directed prompts up front (cleaner separation of director vs. generation). Offline test asserts
-plan-only emits 2 directed prompts and renders no clips. `4 passed`.
+plan-only emits 2 directed prompts and renders no clips.
+
+**LIVE validation on the head (real Gemma, no GPU/gateway/key).** Owner ran `--plan-only` against the
+`kakeya_grpc` runtime → exit 0. Log: `provider=kakeya_grpc model=kakeya-local fake_assets=False` →
+`planning brief…` (`brief: The Dawn Hunter`) → `planning script/scenes…` → `3 scenes` →
+`prompt-director: loaded provider guidance (8000 chars)` → 3× `scene i: directed prompt — <rich
+cinematic prompt>` → `director_prompts.json`. **Gap B core loop (Gemma planning + Layer-3 prompt
+director) is proven live.**
+
+**Schema-drift fix (`enhancement_cues.type`).** Gemma's 4-bit script stage emitted an out-of-enum
+`enhancement_cues.type="visual"`, failing the strict `script.schema.json` (enum: overlay/broll/diagram/
+stat_card/code_snippet/animation; sections `additionalProperties:false`). Hardened `plan_script`: the
+prompt now lists the exact enum + "keep sections minimal, no unknown fields", AND a defensive
+`_sanitize_script()` strips unknown section keys and drops out-of-enum/malformed cues before
+validation (prompt steering alone is fragile for a 4-bit model). Offline test reproduces the
+`type="visual"` drift and asserts the sanitized script passes the schema. `5 passed`. (Folds the
+owner's local plan_script patch into the repo so head==repo, no divergence.)
 
 ---
 
