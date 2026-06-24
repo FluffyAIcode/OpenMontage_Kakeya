@@ -1265,6 +1265,33 @@ Wired a new vast box (RTX PRO 6000 **Blackwell**, 96 GB) as the 3rd node and cha
 
 ---
 
+## Iteration 45 — "tunnel stall" was a v2v-in-worker-thread hang → all tiers use native T2V DIRECT
+
+Chased the `quality=high` wedge (job stuck at refine 58%). It was **not** the tunnel:
+
+- The progress reaching 58% is expected (14 effective steps / 24 `total` for strength 0.6). The
+  **final result never arrives** because the worker is stuck **after** the denoise loop.
+- Bisected it: `framework`/native-T2V at **1280x720** completes in the worker (final 1 MB mp4 sent
+  over the tunnel OK, public download = h264 1280x720); **standalone v2v** at 512x288 completes in a
+  plain process; but the **`refine` (v2v) op hangs in the worker's gRPC servicer thread** after
+  denoise (VAE decode/return never completes, GPU 0%) — at 720p AND at the capped 512x288. So it is a
+  v2v-op × gRPC-thread interaction, independent of resolution and of the SSH tunnel. VAE
+  tiling/slicing (added) did not help.
+- **Fix:** drop v2v from the default tiers and use the **reliable native-T2V DIRECT** path on the
+  strongest worker (the Blackwell CUDA box) for all tiers — which also matches ADR 0015's finding
+  that native T2V beats a low-res seed + I2V/refine. Presets: draft 384x224, **standard 832x480**,
+  **high 1280x720**, all `refine_mode=direct`, 25 frames (4n+1) + interpolation.
+- **Verified end-to-end via `agent.kakeya.ai`** (public download + ffprobe): standard = h264
+  832x480x25; high = h264 1280x720, 47 frames (~2 s). Draft also fine.
+- Left in place as defense/diagnostics: `REFINE_MAX_DIM` cap on the single-refine path, VAE
+  tiling on the CUDA backend, and worker op-error tracebacks + final-message logging.
+
+**Open:** the v2v generative refine (extra detail over native T2V) remains disabled pending a
+root-cause of the in-thread VAE-decode hang (suspect CUDA × gRPC C-core threading; py-spy blocked by
+no SYS_PTRACE in the vast container). Native-T2V direct is the reliable quality path meanwhile.
+
+---
+
 ## Open follow-ups (next iterations)
 - **Phase 2b — native gRPC transport.** Add an optional `kakeya` Python SDK transport
   for the bounded-memory long-context path (W3), behind the same tool, once the proto
