@@ -138,6 +138,18 @@ def _png_bytes(frame):
     buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG"); return buf.getvalue()
 
 
+def _pick_fw(workers, prefer=""):
+    """Fastest framework/generator worker, optionally pinned to a backend substring (e.g. 'hunyuan').
+
+    Lets the gateway route a tier (e.g. 'high') to a specific model worker — Hunyuan for premium
+    quality — while other tiers fall through to the fastest available (WAN). No match -> fastest."""
+    if prefer:
+        m = [w for w in workers if prefer.lower() in (getattr(w, "backend", "") or "").lower()]
+        if m:
+            return max(m, key=lambda w: w.speed)
+    return max(workers, key=lambda w: w.speed)
+
+
 def _stitch(clips, overlap):
     """Concatenate chunks with an `overlap`-frame crossfade so chunk boundaries don't jump-cut.
 
@@ -198,6 +210,9 @@ def main():
     ap.add_argument("--proposer-steps", type=int, default=6)
     ap.add_argument("--refine-steps", type=int, default=16)
     ap.add_argument("--strength", type=float, default=0.6)
+    ap.add_argument("--prefer-backend", default=os.environ.get("PREFER_BACKEND", ""),
+                    help="prefer a framework/generator worker whose backend contains this substring "
+                         "(e.g. 'hunyuan'); falls back to the fastest worker if none match.")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--no-refine", action="store_true",
                     help="single-worker DIRECT T2V (e.g. Mac-only): one generation at fw dims, "
@@ -306,7 +321,7 @@ def main():
     # This is the Mac-only / single-GPU path (mlx-video has no vid2vid). Auto-enabled when no
     # refine worker is present, so the service still produces video with just the Mac.
     if args.no_refine or args.refine_mode == "direct" or not refine_workers:
-        fw = max(fw_workers, key=lambda w: w.speed)
+        fw = _pick_fw(fw_workers, args.prefer_backend)
         nf = args.fw_frames
         print(f"[orch] DIRECT (no-refine) on {fw.addr} ({fw.backend}) "
               f"@ {args.fw_width}x{args.fw_height}x{nf}", flush=True)

@@ -162,14 +162,14 @@ QUALITY_PRESETS: dict[str, dict] = {
     "standard": {"fw_width": 832, "fw_height": 480, "fw_frames": 25, "proposer_steps": 6,
                  "refine_steps": 16, "out_width": 832, "out_height": 480, "frames": 25,
                  "fps": 16, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct"},
-    # 'high' = NATIVE T2V generation at 1280x720 directly on the strongest framework worker (the
-    # CUDA box), no v2v refine. The distributed v2v refine op hangs in the worker's gRPC thread
-    # after denoise (VAE decode never returns; framework/native-T2V at 720p works fine in-thread),
-    # so the reliable hi-res path is direct native generation — which also matches the "native T2V
-    # beats low-res-seed + I2V/refine" finding (ADR 0015). 25 frames (4n+1) + mci interpolation.
-    "high": {"fw_width": 1280, "fw_height": 720, "fw_frames": 25, "proposer_steps": 8,
-             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 25,
-             "fps": 24, "interpolate": 2, "interp_method": "mci", "refine_mode": "direct"},
+    # 'high' = NATIVE 720p generation on the HunyuanVideo (13B) worker — the premium quality layer
+    # (ADR 0017). Routed via prefer_backend='hunyuan' (DIRECT generation; no v2v refine). Hunyuan is
+    # not distilled, so ~30 steps; 45 frames (4n+1) native. Falls back to the fastest worker (WAN) if
+    # no hunyuan worker is up. WAN native 1280x720 direct remains the fallback for high.
+    "high": {"fw_width": 1280, "fw_height": 720, "fw_frames": 45, "proposer_steps": 30,
+             "refine_steps": 24, "out_width": 1280, "out_height": 720, "frames": 45,
+             "fps": 24, "interpolate": 1, "interp_method": "linear", "refine_mode": "direct",
+             "prefer_backend": "hunyuan"},
 }
 
 
@@ -192,6 +192,7 @@ class VideoRequest(BaseModel):
     out_width: Optional[int] = None
     out_height: Optional[int] = None
     refine_mode: Optional[str] = Field(None, pattern="^(auto|direct|single|tiled)$")
+    prefer_backend: Optional[str] = Field(None, pattern="^[a-z0-9_-]{0,24}$")
     # Long-form (ADR 0015 Phase 2): chunks>1 (or longform=true + seconds) = autoregressive I2V gen.
     longform: bool = False
     chunks: Optional[int] = Field(None, ge=1, le=20)
@@ -220,6 +221,8 @@ class VideoRequest(BaseModel):
                 p["chunks"] = max(1, math.ceil((want - p["chunk_overlap"]) / net))
         if p["chunks"] == 1 and p["seconds"] > 0:  # single-pass: seconds drives frame count
             p["frames"] = max(2, round(p["seconds"] * p["fps"]))
+        if self.prefer_backend is not None:
+            p["prefer_backend"] = self.prefer_backend
         p["quality"] = self.quality
         return p
 
@@ -259,6 +262,8 @@ def _run_video_job(job: Job):
         cmd += ["--seconds", str(p["seconds"])]
     if p.get("refine_mode"):  # quality preset / explicit override of refine topology
         cmd += ["--refine-mode", p["refine_mode"]]
+    if p.get("prefer_backend"):  # pin a tier to a model worker (e.g. 'high' -> hunyuan)
+        cmd += ["--prefer-backend", p["prefer_backend"]]
     if p.get("chunks", 1) > 1:  # long-form (autoregressive I2V continuity)
         cmd += ["--chunks", str(p["chunks"]), "--chunk-frames", str(p["chunk_frames"]),
                 "--chunk-overlap", str(p["chunk_overlap"])]
