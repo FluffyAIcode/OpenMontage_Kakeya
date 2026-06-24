@@ -509,8 +509,12 @@ class VideoWorkerServicer(pb_grpc.VideoWorkerServicer):
         if "err" in result:
             context.abort(grpc.StatusCode.INTERNAL, result["err"])
             return
-        yield pb.Progress(pct=1.0, stage="done", done=True,
-                          mp4=frames_to_mp4(result["frames"]), gen_seconds=float(result["t"]))
+        nfr = len(result["frames"]) if result.get("frames") is not None else 0
+        print(f"[grpc_worker] denoise done ({nfr} frames); encoding mp4...", flush=True)
+        _mp4 = frames_to_mp4(result["frames"])
+        print(f"[grpc_worker] encoded mp4 {len(_mp4)} bytes; sending final message...", flush=True)
+        yield pb.Progress(pct=1.0, stage="done", done=True, mp4=_mp4, gen_seconds=float(result["t"]))
+        print("[grpc_worker] final message sent OK", flush=True)
 
     def GenerateFramework(self, request, context):
         yield from self._stream(self.backend.framework, request, context)
