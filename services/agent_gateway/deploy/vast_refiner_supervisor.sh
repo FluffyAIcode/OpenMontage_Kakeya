@@ -123,10 +123,29 @@ once() {
     sleep 2
   fi
 
+  # Optional Hunyuan premium worker (subproc) for the 'high' tier (ADR 0017). Runs as a SECOND tmux
+  # worker on the same box (port VAST_HUNYUAN_REMOTE), tunneled to VAST_HUNYUAN_LOCAL on the head, and
+  # appended to the worker list so the gateway's --prefer-backend=hunyuan routing can reach it.
+  HY=""
+  if [ "${VAST_HUNYUAN:-0}" = "1" ]; then
+    HR="${VAST_HUNYUAN_REMOTE:-50053}"; HL="${VAST_HUNYUAN_LOCAL:-50054}"
+    ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+      "tmux has-session -t hunyuan 2>/dev/null || tmux new-session -d -s hunyuan \"cd /workspace/distwan && HF_HOME=${VAST_HF_HOME:-/root/.hf_home} HUNYUAN_OFFLOAD=${VAST_HUNYUAN_OFFLOAD:-0} DISTWAN_TMP=/workspace HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 ${VAST_VENV_PY:-/venv/main/bin/python} grpc_worker.py --backend hunyuan --subproc --ops framework --host 0.0.0.0 --port $HR > /workspace/distwan/hunyuan_sp.log 2>&1\"" 2>/dev/null
+    if ssh $SSH_OPTS -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" \
+         "bash -c 'exec 3<>/dev/tcp/127.0.0.1/$HR' 2>/dev/null && echo up" 2>/dev/null | grep -q up; then
+      nc -z 127.0.0.1 "$HL" >/dev/null 2>&1 || {
+        pkill -f "L $HL:localhost:$HR" 2>/dev/null; sleep 1
+        ssh $SSH_OPTS -o ExitOnForwardFailure=yes -fN -L "$HL:localhost:$HR" \
+            -p "$VAST_SSH_PORT" "$VAST_SSH_USER@$VAST_SSH_HOST" 2>/dev/null; sleep 2; }
+      nc -z 127.0.0.1 "$HL" >/dev/null 2>&1 && HY=",127.0.0.1:$HL"
+    fi
+  fi
+
   if reachable_local; then
-    write_workers "$BASE_WORKERS,127.0.0.1:$VAST_LOCAL_PORT"; log "vast refiner ONLINE -> 3-node (added 127.0.0.1:$VAST_LOCAL_PORT)"
+    write_workers "$BASE_WORKERS,127.0.0.1:$VAST_LOCAL_PORT$HY"
+    log "vast refiner ONLINE -> $BASE_WORKERS,127.0.0.1:$VAST_LOCAL_PORT$HY"
   else
-    write_workers "$BASE_WORKERS"; log "tunnel failed -> 2-Mac fallback"
+    write_workers "$BASE_WORKERS$HY"; log "wan tunnel failed -> $BASE_WORKERS$HY"
   fi
 }
 
